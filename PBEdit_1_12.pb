@@ -2872,6 +2872,7 @@ Module _PBEdit_
 		ProcedureReturnIf((*te = #Null) Or (*textLine = #Null), "")
 		
 		Protected *previousLine.TE_TEXTLINE = #Null
+		Protected *lineContiuation.TE_TEXTLINE = #Null
 		Protected *indentation.TE_TOKEN = #Null
 		Protected indentationCount = 0
 		
@@ -2891,13 +2892,22 @@ Module _PBEdit_
 				EndIf
 			Wend
 			
-			While Textline_HasLineContinuation(*te, *te\textLine()) And PreviousElement(*te\textLine())
-				*previousLine = *te\textLine()
-			Wend
-			
 			While *previousLine And TextLine_IsEmpty(*previousLine)
 				*previousLine = PreviousElement(*te\textLine())
 			Wend
+			
+			If *previousLine
+				*lineContiuation = *previousLine
+				If PreviousElement(*te\textLine())
+					While Textline_HasLineContinuation(*te, *te\textLine()) And PreviousElement(*te\textLine())
+						*lineContiuation = *te\textLine()
+					Wend
+				EndIf
+				If *lineContiuation <> *previousLine
+					*previousLine = *lineContiuation
+				EndIf
+			EndIf
+			
 			
 			If *previousLine
 				If *previousLine\tokenCount >= 1
@@ -9712,7 +9722,7 @@ Module _PBEdit_
 					Next
 					ForEach *te\cursor()
 						Protected indentation = Indentation_Range(*te, *te\cursor()\position\lineNr - 1, *te\cursor()\position\lineNr, #Null, *te\indentationMode)
-						Indentation_Range(*te, *te\cursor()\position\lineNr - 2, *te\cursor()\position\lineNr, #Null, *te\indentationMode)
+						Indentation_Range(*te, *te\cursor()\position\lineNr - 1, *te\cursor()\position\lineNr, #Null, *te\indentationMode)
 						Cursor_Position(*te, *te\cursor(), *te\cursor()\position\lineNr, indentation)
 					Next
 					
@@ -11495,8 +11505,8 @@ CompilerIf #PB_Compiler_IsMainFile
 	ForEver
 CompilerEndIf
 ; IDE Options = PureBasic 6.00 LTS (Windows - x64)
-; CursorPosition = 145
-; FirstLine = 134
+; CursorPosition = 2903
+; FirstLine = 2889
 ; Folding = ------------------------------------------------
 ; Optimizer
 ; EnableXP

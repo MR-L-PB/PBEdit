@@ -2265,7 +2265,7 @@ Module _PBEdit_
 			; 							Case #TE_Undo_Start
 			; 								Debug ""
 			; 								Debug "  undo start (Undo-ID " + Str(*undo) + ")"
-			; 							Case #TE_Undo_AddText				
+			; 							Case #TE_Undo_AddText
 			; 								Debug "  add text at: " + 
 			; 								      "start <" + Str(*entry\startPos\lineNr) + ", " + Str(*entry\startPos\charNr) + "] end <" + Str(*entry\endPos\lineNr) + ", " + Str(*entry\endPos\charNr) + "]"
 			; 							Case #TE_Undo_DeleteText
@@ -3345,7 +3345,6 @@ Module _PBEdit_
 	
 	Procedure Tokenizer_Textline(*te.TE_STRUCT, *textline.TE_TEXTLINE)
 		ProcedureReturnIf((*te = #Null) Or (*textline = #Null))
-		;  		ProcedureReturnIf(*textline\comment <> #Null)
 		
 		Protected *c.Character
 		Protected size
@@ -3426,12 +3425,12 @@ Module _PBEdit_
 						\type = #TE_Token_Uncomment
 						isComment = #False
 						isUncomment = #False
-					ElseIf (isQuoted = 1) Or ( (isQuoted = 0) And (*c\c = 39))
+					ElseIf (isQuoted = 1) Or ((isQuoted = 0) And (*c\c = 39))
 						\type = #TE_Token_Quote
 						If *c\c = 39
 							isQuoted = Bool(Not isQuoted)
 						EndIf
-					ElseIf (isQuoted = 2) Or ( (isQuoted = 0) And (*c\c = '"'))
+					ElseIf (isQuoted = 2) Or ((isQuoted = 0) And (*c\c = '"'))
 						\type = #TE_Token_String
 						If *c\c = '"'
 							isQuoted = Bool(Not isQuoted) * 2
@@ -11429,18 +11428,32 @@ EndModule
 CompilerIf #PB_Compiler_IsMainFile
 	; *** TEST *** TEST *** TEST *** TEST *** TEST *** TEST *** TEST *** TEST *** TEST 
 	
-	UseModule PBEdit
-	
+	Procedure UndoImage(angle)
+		Protected i = CreateImage(#PB_Any, 24, 24, 32, #PB_Image_Transparent)
+		If IsImage(i)
+			If StartVectorDrawing(ImageVectorOutput(i))
+				RotateCoordinates(12,12,angle)
+				VectorSourceColor(RGBA(64,64,64,255))
+				AddPathSegments("M 0 10 L 12 10 L 12 7 L 23 12 L 12 17 L 12 14 L 0 14 Z")
+ 				FillPath()
+				StopVectorDrawing()
+			EndIf
+		EndIf
+		ProcedureReturn i
+	EndProcedure
+		
 	Enumeration 1
 		#tlb_undo
 		#tlb_redo
 	EndEnumeration
 	
+	UseModule PBEdit
+	
 	OpenWindow(0, 0, 0, 800, 600, "PBEdit 1.12", #PB_Window_SystemMenu | #PB_Window_SizeGadget | #PB_Window_MinimizeGadget | #PB_Window_MaximizeGadget | #PB_Window_Maximize)
 	
 	CreateToolBar(0, WindowID(0), #PB_ToolBar_Large)
-	ToolBarImageButton(#tlb_undo, 0);#PB_ToolBarIcon_Undo)
-	ToolBarImageButton(#tlb_redo, 0);#PB_ToolBarIcon_Redo)
+	ToolBarImageButton(#tlb_undo, ImageID(UndoImage(180)))
+	ToolBarImageButton(#tlb_redo, ImageID(UndoImage(0)))
 	CreateStatusBar(0, WindowID(0))
 	AddStatusBarField(#PB_Ignore)
 	AddStatusBarField(#PB_Ignore)
@@ -11505,8 +11518,6 @@ CompilerIf #PB_Compiler_IsMainFile
 	ForEver
 CompilerEndIf
 ; IDE Options = PureBasic 6.00 LTS (Windows - x64)
-; CursorPosition = 2903
-; FirstLine = 2889
 ; Folding = ------------------------------------------------
 ; Optimizer
 ; EnableXP

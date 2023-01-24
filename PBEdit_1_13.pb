@@ -9467,18 +9467,18 @@ Module _PBEdit_
 					
 				Case #PB_Shortcut_F1
 					
-					If modifiers & #PB_Canvas_Control
-						Textline_AddRemark(*te, *te\currentCursor\position\lineNr, #TE_Remark_Warning, "*This is a warning*", *te\undo)
-					ElseIf modifiers & #PB_Canvas_Shift
-						Textline_AddRemark(*te, *te\currentCursor\position\lineNr, #TE_Remark_Error, "*This is an error*", *te\undo)
-					Else
-						Textline_AddRemark(*te, *te\currentCursor\position\lineNr, #TE_Remark_Text, "*This is a text*", *te\undo)
-					EndIf
-						
-					needredraw = #True
-					clearSelection = #True
-					
-					Undo_Update(*te)
+; 					If modifiers & #PB_Canvas_Control
+; 						Textline_AddRemark(*te, *te\currentCursor\position\lineNr, #TE_Remark_Warning, "*This is a warning*", *te\undo)
+; 					ElseIf modifiers & #PB_Canvas_Shift
+; 						Textline_AddRemark(*te, *te\currentCursor\position\lineNr, #TE_Remark_Error, "*This is an error*", *te\undo)
+; 					Else
+; 						Textline_AddRemark(*te, *te\currentCursor\position\lineNr, #TE_Remark_Text, "*This is a text*", *te\undo)
+; 					EndIf
+; 						
+; 					needredraw = #True
+; 					clearSelection = #True
+; 					
+; 					Undo_Update(*te)
 					
 				Case #PB_Shortcut_F2
 					
@@ -11668,8 +11668,8 @@ CompilerIf #PB_Compiler_IsMainFile
 	ForEver
 CompilerEndIf
 ; IDE Options = PureBasic 6.00 LTS (Windows - x64)
-; CursorPosition = 139
-; FirstLine = 138
+; CursorPosition = 9479
+; FirstLine = 9464
 ; Folding = ------------------------------------------------
 ; Optimizer
 ; EnableXP

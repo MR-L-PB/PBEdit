@@ -142,6 +142,7 @@
 ;	fixed:		autocomplete scrollbar position
 ;	fixed:		find/replace too slow due to permanent dictionary updates
 ;	changed:	copy/paste with multicursor: each cursor now has it's own clipboard
+;	added:		Ctrl+H - replace shortcut
 ;
 ; ----------------------------------------------------------------------------------
 ;
@@ -11667,8 +11668,8 @@ CompilerIf #PB_Compiler_IsMainFile
 	ForEver
 CompilerEndIf
 ; IDE Options = PureBasic 6.00 LTS (Windows - x64)
-; CursorPosition = 142
-; FirstLine = 124
+; CursorPosition = 139
+; FirstLine = 138
 ; Folding = ------------------------------------------------
 ; Optimizer
 ; EnableXP

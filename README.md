@@ -136,3 +136,10 @@ Features
     changed:	the Cursor_Thread is posting the event #TE_Event_CursorBlink to the active editor
     			the actual redrawing of the cursor takes place in the new Procedure "Event_Cursor".
     			at the moment the blink delay is set to a fixed value (500 ms).
+
+	v1.13
+	fixed:		mouse selection related issues
+	fixed:		autocomplete scrollbar position
+	fixed:		find/replace too slow due to permanent dictionary updates
+	changed:	copy/paste with multicursor: each cursor now has it's own clipboard
+	added:		Ctrl+H - replace shortcut

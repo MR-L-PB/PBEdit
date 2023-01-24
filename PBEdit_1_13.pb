@@ -11599,7 +11599,7 @@ CompilerIf #PB_Compiler_IsMainFile
 	
 	UseModule PBEdit
 	
-	OpenWindow(0, 0, 0, 800, 600, "PBEdit 1.12", #PB_Window_SystemMenu | #PB_Window_SizeGadget | #PB_Window_MinimizeGadget | #PB_Window_MaximizeGadget); | #PB_Window_Maximize)
+	OpenWindow(0, 0, 0, 800, 600, "PBEdit 1.12", #PB_Window_SystemMenu | #PB_Window_SizeGadget | #PB_Window_MinimizeGadget | #PB_Window_MaximizeGadget | #PB_Window_Maximize)
 	
 	CreateToolBar(0, WindowID(0), #PB_ToolBar_Large)
 	ToolBarImageButton(#tlb_undo, ImageID(UndoImage(180)))
@@ -11668,8 +11668,8 @@ CompilerIf #PB_Compiler_IsMainFile
 	ForEver
 CompilerEndIf
 ; IDE Options = PureBasic 6.00 LTS (Windows - x64)
-; CursorPosition = 9479
-; FirstLine = 9464
+; CursorPosition = 11598
+; FirstLine = 11575
 ; Folding = ------------------------------------------------
 ; Optimizer
 ; EnableXP

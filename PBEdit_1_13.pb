@@ -141,8 +141,18 @@
 ;	fixed:		mouse selection related issues
 ;	fixed:		autocomplete scrollbar position
 ;	fixed:		find/replace too slow due to permanent dictionary updates
-;	changed:	copy/paste with multicursor: each cursor now has it's own clipboard
+;	fixed:		typo #TE_Font_Undelined = #TE_Font_Underlined
+;	fixed:		case correction not undoable
+;	fixed:		ProcedureReturn before PopListPosition in Procedure Position_InsideComment
 ;	added:		Ctrl+H - replace shortcut
+;	added:		flag #TE_EnableUndo: enable/disable undo
+;	added:		Procedure Textline_ChangeText: change text in place
+;	added:		flag #TE_Undo_ChangeText
+;	changed:	copy/paste with multicursor: each cursor now has it's own clipboard
+;	changed:	Procedure Event_Mouse now calling Event_Mouse_LeftButtonDown, Event_Mouse_LeftButtonUp and Event_Mouse_Move
+;	changed:	renamed TE_STRUCT\autoCompleteList to TE_STRUCT\dictionary
+;	changed:	optimization in Procedure Indentation_Range
+;	changed:	optimization in Procedure Folding_UnfoldTextline
 ;
 ; ----------------------------------------------------------------------------------
 ;
@@ -170,13 +180,12 @@
 
 
 DeclareModule _PBEdit_	
-	#TE_DEBUGDRAW = 0
-	
+	#TE_DEBUGDRAW = 0	
 	#TE_CharSize = SizeOf(Character)
 	#TE_VectorDrawAdjust = 0.5
 	#TE_VectorDrawWidth = 0.5
 	#TE_CharRange = 256
-	; 	#TE_CharRange = 65536
+	;#TE_CharRange = 65536
 	#TE_MaxCursors = 5000
 	#TE_Ignore = -2
 	#TE_Shortcut_PadReturn = 65421; linux key number of Return Key on Number Pad
@@ -194,6 +203,7 @@ DeclareModule _PBEdit_
 	EndEnumeration
 	
 	EnumerationBinary
+		#TE_EnableUndo
 		#TE_EnableScrollBarHorizontal
 		#TE_EnableScrollBarVertical
 		#TE_EnableZooming
@@ -281,7 +291,7 @@ DeclareModule _PBEdit_
 		#TE_Font_Normal
 		#TE_Font_Bold
 		#TE_Font_Italic
-		#TE_Font_Undelined
+		#TE_Font_Underlined
 		#TE_Font_StrikeOut
 	EndEnumeration
 	
@@ -330,6 +340,7 @@ DeclareModule _PBEdit_
 		#TE_Styling_UpdateIndentation
 		#TE_Styling_UnfoldIfNeeded
 		#TE_Styling_CaseCorrection
+		#TE_Styling_NoUndo
 		#TE_Styling_All = #TE_Styling_UpdateFolding | #TE_Styling_UpdateIndentation | #TE_Styling_UnfoldIfNeeded | #TE_Styling_CaseCorrection
 	EndEnumeration
 	
@@ -377,6 +388,7 @@ DeclareModule _PBEdit_
 		#TE_Undo_Start
 		#TE_Undo_AddText
 		#TE_Undo_DeleteText
+		#TE_Undo_ChangeText
 		#TE_Undo_AddRemark
 		#TE_Undo_DeleteRemark
 	EndEnumeration
@@ -611,6 +623,8 @@ DeclareModule _PBEdit_
 		overwrite.i
 		compareMode.i
 		
+		time.i
+		
 		blinkDelay.i
 		blinkSuspend.i
 		blinkState.i
@@ -623,9 +637,14 @@ DeclareModule _PBEdit_
 		firstClickTime.i				; in Event_Mouse
 		firstClickX.i					; in Event_Mouse:	first x-position of the mouse
 		firstClickY.i					; in Event_Mouse:	first y-position of the mouse
+		mousePosition.i					; in Event_Mouse:	clicked position (#TE_MousePosition_...)
 		firstMousePosition.i			; in Event_Mouse:	first clicked position (#TE_MousePosition_...)
 		firstSelection.TE_RANGE			; in Event_Mouse:	first selection
+		position.TE_POSITION			; in Event_Mouse:	position
 		previousPosition.TE_POSITION	; in Event_Mouse:	previous position
+		
+		selection.TE_RANGE
+		previousSelection.TE_RANGE
 		
 		dragDropMode.i
 		dragStart.i
@@ -633,7 +652,9 @@ DeclareModule _PBEdit_
 		dragTextPreview.s
 		dragPosition.TE_POSITION
 		
-		mouseX.i						; mouse Position inside Canvas
+		canvasMouseX.i					; mouse Position inside Canvas (dpi aware)
+		canvasMouseY.i
+		mouseX.i						; mouse Position inside Canvas (unscaled version of canvasMouseX / canvasMouseY)
 		mouseY.i
 		windowMouseX.i					; mouse Position inside Window
 		windowMouseY.i
@@ -641,6 +662,8 @@ DeclareModule _PBEdit_
 		desktopMouseY.i
 		deltaX.i						; mouse movement
 		deltaY.i
+		
+		needRedraw.i
 	EndStructure
 	
 	Structure TE_CURSOR
@@ -826,7 +849,7 @@ DeclareModule _PBEdit_
 		
 		Map keyWord.TE_KEYWORD()
 		Map keyWordLineContinuation.s()
-		Map autoCompleteList.s()
+		Map dictionary.s()
 		Map syntax.TE_SYNTAX()
 		
 		Array font.TE_FONT(8)
@@ -938,15 +961,15 @@ DeclareModule _PBEdit_
 	
 	Declare.s Text_Get(*te.TE_STRUCT, startLineNr, startCharNr, endLineNr, endCharNr)
 	
-	Declare Undo_Start(*undo.TE_UNDO)
-	Declare Undo_Add(*undo.TE_UNDO, action, startLineNr = 0, startCharNr = 0, endLineNr = 0, endCharNr = 0, text.s = "")
+	Declare Undo_Start(*te.TE_STRUCT, *undo.TE_UNDO)
+	Declare Undo_Add(*te.TE_STRUCT, *undo.TE_UNDO, action, startLineNr = 0, startCharNr = 0, endLineNr = 0, endCharNr = 0, text.s = "")
 	Declare Undo_Do(*te.TE_STRUCT, *undo.TE_UNDO, *redo.TE_UNDO)
 	Declare Undo_Update(*te.TE_STRUCT)
 	Declare Undo_Clear(*undo.TE_UNDO)
 	
 	Declare Syntax_Add(*te.TE_STRUCT, text.s, flags = #TE_Parser_Multiline)
 	
-	Declare Style_Textline(*te.TE_STRUCT, *textLine.TE_TEXTLINE, flags = 0)
+	Declare Style_Textline(*te.TE_STRUCT, *textLine.TE_TEXTLINE, styleFlags = 0, *undo.TE_UNDO = #Null)
 	Declare Style_LoadFont(*te.TE_STRUCT, *font.TE_FONT, fontName.s, fontSize, fontStyle = 0)
 	Declare Style_SetFont(*te.TE_STRUCT, fontName.s, fontSize, fontStyle = 0)
 	Declare Style_Set(*te.TE_STRUCT, styleNr, fontNr, color, bColor = #TE_Ignore, uColor = #TE_Ignore)
@@ -965,7 +988,7 @@ DeclareModule _PBEdit_
 	
 	Declare Folding_Update(*te.TE_STRUCT, firstLine, lastLine)
 	Declare Folding_UnfoldTextline(*te.TE_STRUCT, lineNr, updateFolding = #True)
-	Declare Folding_GetTextBlock(*te.TE_STRUCT, lineNr)
+	Declare Folding_GetTextBlock(*te.TE_STRUCT, lineNr, foldstate = 0)
 	
 	Declare.s Indentation_Clear(*textLine.TE_TEXTLINE)
 	
@@ -978,6 +1001,7 @@ DeclareModule _PBEdit_
 	Declare Textline_BottomLine(*te.TE_STRUCT)
 	Declare Textline_AddChar(*te.TE_STRUCT, *cursor.TE_CURSOR, c.c, overwrite, styleFlags = #TE_Styling_All, *undo.TE_UNDO = #Null)
 	Declare Textline_AddText(*te.TE_STRUCT, *cursor.TE_CURSOR, *c.Character, textLength, styleFlags = #TE_Styling_All, *undo.TE_UNDO = #Null)
+	Declare Textline_ChangeText(*te.TE_STRUCT, *textline.TE_TEXTLINE, charNr, newText.s, *undo.TE_UNDO)
 	Declare Textline_SetText(*te.TE_STRUCT, *textLine.TE_TEXTLINE, text.s, styleFlags = #TE_Styling_All, *undo.TE_UNDO = #Null)
 	Declare Textline_AddRemark(*te.TE_STRUCT, lineNr, type , text.s, *undo.TE_UNDO)
 	Declare Textline_DeleteRemark(*te.TE_STRUCT, lineNr, *undo.TE_UNDO)
@@ -1016,14 +1040,15 @@ DeclareModule _PBEdit_
 	
 	Declare Cursor_Add(*te.TE_STRUCT, lineNr, charNr, checkOverlap = #True, startSelection = #True)
 	Declare Cursor_Delete(*te.TE_STRUCT, *cursor.TE_CURSOR)
-	Declare Cursor_Update(*te.TE_STRUCT, *cursor.TE_CURSOR, updateLastX)
+	Declare Cursor_Update(*te.TE_STRUCT, *cursor.TE_CURSOR, updateLastX, *undo.TE_UNDO = #Null)
 	Declare Cursor_DeleteOverlapping(*te.TE_STRUCT, *cursor.TE_CURSOR, joinSelections = #False)
 	Declare Cursor_Clear(*te.TE_STRUCT, *maincursor.TE_CURSOR)
 	Declare Cursor_Sort(*te.TE_STRUCT, sortOrder = #PB_Sort_Ascending)
-	Declare Cursor_Move(*te.TE_STRUCT, *cursor.TE_CURSOR, dirY, dirX)
+	Declare Cursor_Move(*te.TE_STRUCT, *cursor.TE_CURSOR, dirY, dirX, *undo.TE_UNDO = #Null)
 	Declare Cursor_MoveMulti(*te.TE_STRUCT, *cursor.TE_CURSOR, previousLineNr, dirY, dirX)
-	Declare Cursor_Position(*te.TE_STRUCT, *cursor.TE_CURSOR, lineNr, charNr, ensureVisible = #True, updateLastX = #True)
+	Declare Cursor_Position(*te.TE_STRUCT, *cursor.TE_CURSOR, lineNr, charNr, ensureVisible = #True, updateLastX = #True, *undo.TE_UNDO = #Null)
 	Declare Cursor_HasSelection(*cursor.TE_CURSOR)
+	Declare Cursor_GetScreenPos(*te.TE_STRUCT, *view.TE_VIEW, x, y, *result.TE_POSITION)
 	Declare Cursor_FromScreenPos(*te.TE_STRUCT, *view.TE_VIEW, *cursor.TE_CURSOR, x, y, addCursor = #False)
 	Declare Cursor_Thread(*window.TE_WINDOW)
 	; 	Declare Cursor_InsideComment(*te.TE_STRUCT, *cursor.TE_CURSOR)
@@ -1126,6 +1151,7 @@ Module _PBEdit_
 			ProcedureReturn "Token: " + TokenEnumName(*te\parser\token\type) + " Style: " + StyleEnumName(*te\currentCursor\position\textLine\style(*te\parser\token\charNr))
 		EndIf
 	EndProcedure
+	
 	;-
 	;- ------------ INITIALIZATION -----------
 	;-
@@ -1154,8 +1180,8 @@ Module _PBEdit_
 		
 		*te\language\messageTitleFindReplace = PreferenceString("MessageTitleFindReplace", "Find/Replace")
 		*te\language\messageNoMoreMatches = PreferenceString("MessageNoMoreMatches", "No more matches found.")
-		*te\language\messageNoMoreMatchesEnd = PreferenceString("MessageNoMoreMatchesEnd", "No more matches found.\nDo you want To search from the end of the file?")
-		*te\language\messageNoMoreMatchesStart = PreferenceString("MessageNoMoreMatchesStart", "No more matches found.\nDo you want To search from the start of the file?")
+		*te\language\messageNoMoreMatchesEnd = PreferenceString("MessageNoMoreMatchesEnd", "No more matches found.\nDo you want to search from the end of the file?")
+		*te\language\messageNoMoreMatchesStart = PreferenceString("MessageNoMoreMatchesStart", "No more matches found.\nDo you want to search from the start of the file?")
 		*te\language\messageReplaceComplete = PreferenceString("MessageReplaceComplete", "Find/Replace complete.\n%N1 matches found.")
 		ClosePreferences()
 	EndProcedure
@@ -1257,7 +1283,7 @@ Module _PBEdit_
 		
 		*te\window = window
 		
-		
+		SetFlag(*te, #TE_EnableUndo, 1)
 		SetFlag(*te, #TE_EnableScrollBarHorizontal, 1)
 		SetFlag(*te, #TE_EnableScrollBarVertical, 1)
 		SetFlag(*te, #TE_EnableZooming, 1)
@@ -1317,7 +1343,6 @@ Module _PBEdit_
 		*te\foldChar = 1
 		
 		*te\regExDictionary = CreateRegularExpression(#PB_Any, "[#*]?\w+[\d+]?[$]?") ; match [*/#]text[number][$]
-		
 		
 		With *te\colors
 			\defaultText = RGBA( 0, 0, 0, 255)
@@ -2101,22 +2126,25 @@ Module _PBEdit_
 	Procedure Position_InsideComment(*te.TE_STRUCT, lineNr, charNr)
 		ProcedureReturnIf(*te = #Null)
 		
-		PushListPosition(*te\textLine())
+		Protected result = #False
 		Protected i
-		Protected *textline.TE_TEXTLINE =  Textline_FromLine(*te, lineNr)
+		Protected *textline.TE_TEXTLINE
 		
+		PushListPosition(*te\textLine())
+		*textline = Textline_FromLine(*te, lineNr)
 		If *textLine
 			If Parser_TokenAtCharNr(*te, *textline, charNr)
 				For i = *te\parser\tokenIndex To 1 Step - 1
 					If *textline\token(i)\type = #TE_Token_Comment
-						ProcedureReturn #True
+						result = #True
+						Break
 					EndIf
 				Next
 			EndIf
 		EndIf
 		PopListPosition(*te\textLine())
 		
-		ProcedureReturn #False
+		ProcedureReturn result
 	EndProcedure
 	
 	Procedure Position_Equal(*pos1.TE_POSITION, *pos2.TE_POSITION)
@@ -2235,17 +2263,17 @@ Module _PBEdit_
 	;- ----------- UNDO -----------
 	;-
 	
-	Procedure Undo_Start(*undo.TE_UNDO)
-		ProcedureReturnIf(*undo = #Null)
+	Procedure Undo_Start(*te.TE_STRUCT, *undo.TE_UNDO)
+		ProcedureReturnIf((*te = #Null) Or (*undo = #Null) Or GetFlag(*te, #TE_EnableUndo) = 0)
 		
 		Protected result = ListSize(*undo\entry())
-		Undo_Add(*undo, #TE_Undo_Start)
+		Undo_Add(*te, *undo, #TE_Undo_Start)
 		
 		ProcedureReturn result
 	EndProcedure
 	
-	Procedure Undo_Add(*undo.TE_UNDO, action, startLineNr = 0, startCharNr = 0, endLineNr = 0, endCharNr = 0, text.s = "")
-		ProcedureReturnIf(*undo = #Null)
+	Procedure Undo_Add(*te.TE_STRUCT, *undo.TE_UNDO, action, startLineNr = 0, startCharNr = 0, endLineNr = 0, endCharNr = 0, text.s = "")
+		ProcedureReturnIf((*undo = #Null) Or GetFlag(*te, #TE_EnableUndo) = 0)
 		
 		Protected *entry.TE_UNDOENTRY = LastElement(*undo\entry())
 		
@@ -2272,10 +2300,13 @@ Module _PBEdit_
 ; 			Select action
 ; 				Case #TE_Undo_Start
 ; 					Debug ""
-; 					Debug "  undo start (Undo-ID " + Str(*undo) + ")"
+					;Debug "  undo start (Undo-ID " + Str(*undo) + ")"
 ; 				Case #TE_Undo_AddText
 ; 					Debug "  add text at: " + 
 ; 					      "start <" + Str(*entry\startPos\lineNr) + ", " + Str(*entry\startPos\charNr) + "] end <" + Str(*entry\endPos\lineNr) + ", " + Str(*entry\endPos\charNr) + "]"
+; 				Case #TE_Undo_ChangeText
+; 					Debug "  change text at: " + 
+; 					      "start <" + Str(*entry\startPos\lineNr) + ", " + Str(*entry\startPos\charNr) + "]"
 ; 				Case #TE_Undo_DeleteText
 ; 					Debug "  delete text: " + ReplaceString(ReplaceString(*entry\text, Chr(10), "<\n]"), #TAB$, "<TAB]")
 ; 					Debug "  start <" + Str(*entry\startPos\lineNr) + ", " + Str(*entry\startPos\charNr) + "]"
@@ -2301,7 +2332,7 @@ Module _PBEdit_
 		
 		Selection_ClearAll(*te, #True)
 		
-		Undo_Add(*redo, #TE_Undo_Start)
+		Undo_Add(*te, *redo, #TE_Undo_Start)
 		
 		Repeat
 			Select *entry\action
@@ -2320,6 +2351,11 @@ Module _PBEdit_
 					
 					Cursor_Position(*te, *te\currentCursor, *entry\startPos\lineNr, *entry\startPos\charNr, #False, #False)
 					Textline_AddText(*te, *te\currentCursor, @*entry\text, Len(*entry\text), #TE_Styling_UpdateFolding | #TE_Styling_UpdateIndentation, *redo)
+					
+				Case #TE_Undo_ChangeText
+					
+					Textline_ChangeText(*te, Textline_FromLine(*te, *entry\startPos\lineNr), *entry\startPos\charNr, *entry\text, *redo)
+					Cursor_Position(*te, *te\currentCursor, *entry\endPos\lineNr, *entry\endPos\charNr, #False, #False)
 					
 				Case #TE_Undo_AddRemark
 					
@@ -2357,7 +2393,7 @@ Module _PBEdit_
 	Procedure Undo_Update(*te.TE_STRUCT)
 		; remove undo-start-markers from end of undo list
 		
-		ProcedureReturnIf(*te = #Null)
+		ProcedureReturnIf((*te = #Null) Or (*te\undo = #Null) Or GetFlag(*te, #TE_EnableUndo) = 0)
 		
 		Protected result = #False
 		
@@ -2516,15 +2552,18 @@ Module _PBEdit_
 	;- ----------- FOLDING -----------
 	;-
 	
-	Procedure Folding_GetTextBlock(*te.TE_STRUCT, lineNr)
+	Procedure Folding_GetTextBlock(*te.TE_STRUCT, lineNr, foldstate = 0)
 		ProcedureReturnIf(*te = #Null)
 		
 		Protected *textBlock.TE_TEXTBLOCK = #Null
-		
+
 		PushListPosition(*te\textBlock())
 		ForEach *te\textBlock()
 			If (lineNr >= *te\textBlock()\firstLineNr) And (lineNr <= *te\textBlock()\lastLineNr Or *te\textBlock()\lastLineNr = 0)
-				*textBlock = *te\textBlock()
+				If (foldstate = 0) Or (*te\textBlock()\firstLine And (*te\textBlock()\firstLine\foldState = foldstate))
+					*textBlock = *te\textBlock()
+					;Break
+				EndIf
 			EndIf
 		Next
 		PopListPosition(*te\textBlock())
@@ -2645,7 +2684,8 @@ Module _PBEdit_
 		
 		PushListPosition(*te\textBlock())
 		Protected *textblock.TE_TEXTBLOCK = Folding_GetTextBlock(*te, lineNr)
-		Protected scrollLineNr = LineNr_from_VisibleLineNr(*te, *te\currentView\scroll\visibleLineNr)
+		
+ 		Protected scrollLineNr = LineNr_from_VisibleLineNr(*te, *te\currentView\scroll\visibleLineNr)
 		
 		If *textblock
 			If *textblock\firstLine\foldState = #TE_Folding_Folded
@@ -2672,7 +2712,8 @@ Module _PBEdit_
 	Procedure Folding_ToggleAll(*te.TE_STRUCT)
 		ProcedureReturnIf(*te = #Null)
 		
-		Protected scrollLineNr = LineNr_from_VisibleLineNr(*te, *te\currentView\scroll\visibleLineNr)
+; 		Protected scrollLineNr = LineNr_from_VisibleLineNr(*te, *te\currentView\scroll\visibleLineNr)
+		Protected scrollLineNr = *te\currentCursor\position\lineNr
 		
 		ForEach *te\textBlock()
 			With *te\textBlock()
@@ -2696,29 +2737,22 @@ Module _PBEdit_
 		ProcedureReturnIf(*te = #Null)
 		
 		Protected foldFound = #False
-		Protected *textBlock.TE_TEXTBLOCK, *previousTextBlock.TE_TEXTBLOCK
 		
-		PushListPosition(*te\textBlock())
-		Repeat
-			*previousTextBlock = *textBlock
-			*textBlock = Folding_GetTextBlock(*te, lineNr)
-			
-			If *textBlock
-				If (*textBlock\firstLine And (*textBlock\firstLine\foldState & #TE_Folding_Folded))
-					*textBlock\firstLine\foldState = #TE_Folding_Unfolded
+		PushListPosition(*te\textBlock())		
+		ForEach *te\textBlock()
+			If *te\textBlock()\firstLine
+				If (lineNr >= *te\textBlock()\firstLineNr) And (lineNr <= *te\textBlock()\lastLineNr Or *te\textBlock()\lastLineNr = 0)
+					*te\textBlock()\firstLine\foldState = #TE_Folding_Unfolded
 					*te\needFoldUpdate = #True
-					*te\redrawMode | #TE_Redraw_All
-					
 					foldFound = #True
 				EndIf
-				
-				lineNr = *textBlock\firstLineNr - 1
 			EndIf
-		Until (*textBlock = #Null) Or (*textBlock = *previousTextBlock)
+		Next
 		PopListPosition(*te\textBlock())
 		
-		If updateFolding And foldFound
+		If updateFolding And *te\needFoldUpdate
 			Folding_Update(*te, -1, -1)
+			*te\redrawMode = #TE_Redraw_All
 		EndIf
 		
 		ProcedureReturn foldFound
@@ -2728,9 +2762,7 @@ Module _PBEdit_
 		ProcedureReturnIf(*te = #Null)
 		
 		Protected *textblock.TE_TEXTBLOCK = Folding_GetTextBlock(*te, lineNr)
-		; 		Debug *textblock\firstLineNr
-		; 		Debug *textblock\lastLineNr
-		
+
 		If *textblock
 			If *textblock\firstLine
 				*textblock\firstLine\foldState = 0
@@ -2902,35 +2934,15 @@ Module _PBEdit_
 		
 		If mode = #TE_Indentation_Auto
 			
-			While (*previousLine = #Null) And PreviousElement(*te\textLine())
-				*textLine = *te\textLine()
-				If *textLine\tokenCount > 0
-					If (*textLine\tokenCount = 1) And (*textLine\token(1)\type = #TE_Token_Whitespace)
-						*indentation = @*textLine\token(1)
-					Else
-						*previousLine = *textLine
-					EndIf
-				EndIf
+			While PreviousElement(*te\textLine()) And TextLine_IsEmpty(*te\textLine())
+			Wend
+			*previousLine = *te\textLine()
+			
+			While PreviousElement(*te\textLine()) And Textline_HasLineContinuation(*te, *te\textLine())
+				*previousLine = *te\textLine()
 			Wend
 			
-			While *previousLine And TextLine_IsEmpty(*previousLine)
-				*previousLine = PreviousElement(*te\textLine())
-			Wend
-			
-			If *previousLine
-				*lineContiuation = *previousLine
-				If PreviousElement(*te\textLine())
-					While Textline_HasLineContinuation(*te, *te\textLine()) And PreviousElement(*te\textLine())
-						*lineContiuation = *te\textLine()
-					Wend
-				EndIf
-				If *lineContiuation <> *previousLine
-					*previousLine = *lineContiuation
-				EndIf
-			EndIf
-			
-			
-			If *previousLine
+			If *previousLine And *previousLine\lineNr > 1
 				If *previousLine\tokenCount >= 1
 					If *previousLine\token(1)\type = #TE_Token_Whitespace
 						*indentation = @*previousLine\token(1)
@@ -2939,6 +2951,9 @@ Module _PBEdit_
 					EndIf
 				EndIf
 				indentationCount = *previousLine\indentationAfter
+			Else
+				indentationCount = 0
+				*indentation = #Null
 			EndIf
 			
 		ElseIf mode = #TE_Indentation_Block
@@ -2966,8 +2981,8 @@ Module _PBEdit_
 		ProcedureReturnIf((*te = #Null) Or (GetFlag(*te, #TE_EnableIndentation) = 0))
 		
 		Protected *textline.TE_TEXTLINE, *previousTextline.TE_TEXTLINE
-		Protected indentationCount, indentation.s
-		Protected text.s
+		Protected indentationCount, indentation.s, hasLineContinuation, continueLine
+		Protected previousIndentationCount, previousIndentation.s, previousHasLineContinuation
 		
 		If lastLineNr <= 0
 			lastLineNr = firstLineNr
@@ -2984,38 +2999,51 @@ Module _PBEdit_
 			
 			PushListPosition(*te\textLine())
 			*previousTextline = PreviousElement(*te\textLine())
+			hasLineContinuation = Textline_HasLineContinuation(*te, *previousTextline)
 			PopListPosition(*te\textLine())
 			
-			Protected continueLine
-			
 			If mode = #TE_Indentation_Auto
+				
 				Repeat
-					If *previousTextline And Textline_HasLineContinuation(*te, *previousTextline)
+					previousHasLineContinuation = hasLineContinuation
+					hasLineContinuation = Textline_HasLineContinuation(*te, *te\textLine())
+					
+					If previousHasLineContinuation
 						indentation = Indentation_LineContinuation(*te, *previousTextline)
-						If continueLine = 0
-							continueLine = 1
-							indentationCount = 0
-						EndIf
 					Else
 						If continueLine
-							indentation = Indentation_Before(*te, *previousTextline, mode)
 							continueLine = 0
+							indentation = previousIndentation
+ 							indentationCount = previousIndentationCount
 						EndIf
-						
-						indentationCount + *te\textLine()\indentationBefore
-						indentation = Indentation_Text(*te, indentation, indentationCount)
+						indentation = Indentation_Text(*te, indentation, indentationCount + *te\textLine()\indentationBefore)
 						indentationCount = *te\textLine()\indentationAfter
+						If hasLineContinuation And (continueLine = 0)							
+							continueLine = 1
+ 							previousIndentation = indentation
+ 							previousIndentationCount = indentationCount
+ 						EndIf
 					EndIf
 					
 					Textline_SetText(*te, *te\textLine(), indentation + Indentation_Clear(*te\textLine()), #TE_Styling_UpdateIndentation, *te\undo)
+					
+					If ListIndex(*te\textLine()) >= lastLineNr - 1
+						Break
+					EndIf
+					
 					*previousTextline = *te\textLine()
-				Until (ListIndex(*te\textLine()) >= lastLineNr - 1) Or (NextElement(*te\textLine()) = #Null)
+				Until NextElement(*te\textLine()) = #Null
+
+				If Textline_HasLineContinuation(*te, *previousTextline)
+					indentation = Indentation_LineContinuation(*te, *previousTextline)
+				Else
+					indentation = Indentation_Before(*te, *previousTextline)
+				EndIf
 				
 			ElseIf mode = #TE_Indentation_Block
 				
 				Repeat
-					text = Indentation_Clear(*te\textLine())
-					Textline_SetText(*te, *te\textLine(), indentation + text, #TE_Styling_UpdateIndentation, *te\undo)
+					Textline_SetText(*te, *te\textLine(), indentation + Indentation_Clear(*te\textLine()), #TE_Styling_UpdateIndentation, *te\undo)
 				Until (ListIndex(*te\textLine()) >= lastLineNr - 1) Or (NextElement(*te\textLine()) = #Null)
 				
 			EndIf
@@ -3249,7 +3277,7 @@ Module _PBEdit_
 					endLoop = #False
 				ElseIf (flags & #TE_Parser_SkipBlankLines) And ((*textline\tokenCount = 1) Or (*textline\tokenCount = 2 And *textline\token(1)\type = #TE_Token_Whitespace))
 					endLoop = #False
-				ElseIf (flags & #TE_Parser_IgnoreComments) And *textline\style(*token\charNr) = #TE_Style_Comment
+				ElseIf (flags & #TE_Parser_IgnoreComments) And (*textline\style(*token\charNr) = #TE_Style_Comment)
 					endLoop = #False
 				EndIf
 				
@@ -3303,6 +3331,70 @@ Module _PBEdit_
 			
 			*c + #TE_CharSize
 		Wend
+		
+		ProcedureReturn size
+	EndProcedure
+	
+	Procedure Tokenizer_GetNumberBin(*text.Character, *token.TE_TOKEN)
+		Protected *c.Character = *text
+		Protected size
+		Protected opFound
+		
+		While *c\c
+			Select *c\c
+				Case '%'
+					If opFound = 0
+						opFound = 1
+						size + 1
+					Else
+						Break
+					EndIf
+				Case '0', '1'
+					size + 1
+				Default
+					Break
+			EndSelect
+			
+			*c + #TE_CharSize
+		Wend
+		
+		If size > 1
+			*token\type = #TE_Token_Quote
+		Else
+			*token\type = #TE_Token_Operator
+		EndIf
+		
+		ProcedureReturn size
+	EndProcedure
+	
+	Procedure Tokenizer_GetNumberHex(*text.Character, *token.TE_TOKEN)
+		Protected *c.Character = *text
+		Protected size
+		Protected opFound
+		
+		While *c\c
+			Select *c\c
+				Case '$'
+					If opFound = 0
+						opFound = 1
+						size + 1
+					Else
+						Break
+					EndIf
+				Case '0' To '9', 'A' To 'F', 'a' To 'f'
+					size + 1
+				Default
+					Break
+			EndSelect
+			
+			*c + #TE_CharSize
+		Wend
+		
+		If size > 1
+			*token\type = #TE_Token_Quote
+		Else
+			*token\type = #TE_Token_Unknown
+		EndIf
 		
 		ProcedureReturn size
 	EndProcedure
@@ -3415,8 +3507,16 @@ Module _PBEdit_
 						size = Tokenizer_GetNumber(*c, @token)
 					Case #TE_Token_Text
 						size = Tokenizer_GetText(*c, @token)
+					Case #TE_Token_Operator
+						If *c\c = '%'
+							size = Tokenizer_GetNumberBin(*c, @token)
+						EndIf
 					Case #TE_Token_Unknown
-						size = Tokenizer_GetText(*c, @token, #TE_Token_Unknown)
+						If *c\c = '$'
+							size = Tokenizer_GetNumberHex(*c, @token)
+						Else
+							size = Tokenizer_GetText(*c, @token, #TE_Token_Unknown)
+						EndIf
 				EndSelect
 			EndIf
 			
@@ -3550,7 +3650,6 @@ Module _PBEdit_
 					If *te\syntax()\flags = skipFlags
 						skip + 1
 					ElseIf *te\syntax()\flags = findFlags
-						; 						Debug Str(Textline_LineNr(*te, *te\parser\textline)) + ": " + TokenText(*te\parser\token)
 						If skip
 							skip = Max(skip - 1, 0)
 						Else
@@ -3912,7 +4011,7 @@ Module _PBEdit_
 	;- ----------- STYLE -----------
 	;-
 	
-	Procedure Style_Textline(*te.TE_STRUCT, *textLine.TE_TEXTLINE, styleFlags = 0)
+	Procedure Style_Textline(*te.TE_STRUCT, *textLine.TE_TEXTLINE, styleFlags = 0, *undo.TE_UNDO = #Null)
 		ProcedureReturnIf((*te = #Null) Or (*textLine = #Null))
 		
 		Protected indentationCount, indentationBeforeCount, indentationAfterCount
@@ -3926,7 +4025,7 @@ Module _PBEdit_
 		Protected tokenType
 		Protected indentation
 		Protected *keyWord.TE_KEYWORD
-		Protected key.s
+		Protected TokenText.s, key.s
 		
 		If Tokenizer_Textline(*te, *textLine)
 			previousFoldCount = *textLine\foldCount
@@ -3967,7 +4066,8 @@ Module _PBEdit_
 					EndIf
 					
 					If (isComment = #False) And (styleFlags & #TE_Styling_UpdateIndentation) And (*textLine\style(*token\charNr) <> #TE_Style_Comment)
-						key = LCase(PeekS(*token\text, *token\size))
+						tokenText = PeekS(*token\text, *token\size)
+						key = LCase(tokenText)
 						*keyWord = FindMapElement(*te\keyWord(), key)
 						If *keyWord
 							If TokenType = #TE_Token_String Or TokenType = #TE_Token_Quote Or TokenType = #TE_Token_Comment
@@ -3988,8 +4088,6 @@ Module _PBEdit_
 							EndIf
 						EndIf
 					EndIf
-					
-					
 					
 					If isComment
 						
@@ -4032,7 +4130,8 @@ Module _PBEdit_
 								
 								If *textLine\style(charNr) = 0
 									If *keyWord = 0
-										key = LCase(PeekS(*token\text, *token\size))
+										TokenText = PeekS(*token\text, *token\size)
+										key = LCase(TokenText)
 										*keyWord = FindMapElement(*te\keyWord(), key)
 									EndIf
 									If *keyWord
@@ -4040,7 +4139,7 @@ Module _PBEdit_
 										foldCount + *keyWord\foldState
 										
 										If GetFlag(*te, #TE_EnableCaseCorrection) And (styleFlags & #TE_Styling_CaseCorrection) And (*keyWord\caseCorrection)
-											ReplaceString(*textLine\text, *keyWord\name, *keyWord\name, #PB_String_NoCase | #PB_String_InPlace, charNr, 1)
+											Textline_ChangeText(*te, *textLine, charNr, *keyWord\name, *te\undo) 
 										EndIf
 										
 									ElseIf tokenType = #TE_Token_Text
@@ -4096,8 +4195,6 @@ Module _PBEdit_
 								*textLine\style(charNr) = #TE_Style_None
 								
 						EndSelect
-						
-						
 						
 						If TokenType = #TE_Token_Unknown
 							If (*token\text\c = '$') And *previousToken And *previousToken\type = #TE_Token_Text
@@ -4249,7 +4346,7 @@ Module _PBEdit_
 		Style_LoadFont(*te, *te\font(#TE_Font_Normal), fontName, fontSize, #PB_Font_HighQuality | fontStyle)
 		Style_LoadFont(*te, *te\font(#TE_Font_Bold), fontName, fontSize, #PB_Font_HighQuality | #PB_Font_Bold)
 		; 		Style_LoadFont(*te, *te\font(#TE_Font_Italic), fontName, fontSize, #PB_Font_HighQuality | #PB_Font_Italic)
-		; 		Style_LoadFont(*te, *te\font(#TE_Font_Undelined), fontName, fontSize, #PB_Font_HighQuality | #PB_Font_Underline)
+		; 		Style_LoadFont(*te, *te\font(#TE_Font_Underlined), fontName, fontSize, #PB_Font_HighQuality | #PB_Font_Underline)
 		; 		Style_LoadFont(*te, *te\font(#TE_Font_StrikeOut), fontName, fontSize, #PB_Font_HighQuality | #PB_Font_StrikeOut)
 		
 		*te\leftBorderOffset = BorderSize(*te)
@@ -4343,12 +4440,16 @@ Module _PBEdit_
 		
 		FreeArray(*te\textLine()\token())
 		*te\textLine()\text = #Null$
-		
+
 		*textline = DeleteElement(*te\textLine(), 1)
 		If *textline
 			*textline\marker | marker
 		EndIf
 		
+		If *te\currentCursor
+			*te\currentCursor\previousPosition\textline = #Null
+		EndIf
+
 		ProcedureReturn *textline
 	EndProcedure
 	
@@ -4388,13 +4489,13 @@ Module _PBEdit_
 					Swap *textLine\marker, *previousLine\marker
 				EndIf
 				
-				Style_Textline(*te, *previousLine, styleFlags)
+				Style_Textline(*te, *previousLine, styleFlags, *undo)
 			EndIf
 			
 		Else
 			
 			If overwrite And *cursor\position\charNr <= Textline_Length(*textLine)
-				Undo_Add(*undo, #TE_Undo_DeleteText, previousLineNr, previousCharNr, 0, 0, Mid(*textLine\text, *cursor\position\charNr, 1))
+				Undo_Add(*te, *undo, #TE_Undo_DeleteText, previousLineNr, previousCharNr, 0, 0, Mid(*textLine\text, *cursor\position\charNr, 1))
 				*textLine\text = Text_Replace(*textLine\text, Chr(c), *cursor\position\charNr)
 			Else
 				*textLine\text = InsertString(*textLine\text, Chr(c), *cursor\position\charNr)
@@ -4411,9 +4512,9 @@ Module _PBEdit_
 		
 		*te\leftBorderOffset = BorderSize(*te)
 		
-		Style_Textline(*te, *cursor\position\textline, styleFlags)
+		Undo_Add(*te, *undo, #TE_Undo_AddText, previousLineNr, previousCharNr, *cursor\position\lineNr, *cursor\position\charNr)
 		
-		Undo_Add(*undo, #TE_Undo_AddText, previousLineNr, previousCharNr, *cursor\position\lineNr, *cursor\position\charNr)
+ 		Style_Textline(*te, *cursor\position\textline, styleFlags, *undo)
 		
 		If overwrite = #False
 			Cursor_MoveMulti(*te, *cursor, previousLineNr, *cursor\position\lineNr - previousLineNr, *cursor\position\charNr - previousCharNr)
@@ -4475,17 +4576,15 @@ Module _PBEdit_
 					*previousLine = *cursor\position\textline
 					
 					*cursor\position\textline\textWidth = Textline_Width(*te, *previousLine)
-					
 					*cursor\position\textline = Textline_Add(*te)
 					*cursor\position\lineNr + 1
 					*cursor\position\visibleLineNr + 1
 					*cursor\position\charNr = 1
 					*cursor\position\charX = 0
 					
-					
 					*te\maxTextWidth = Max(*te\maxTextWidth, *previousLine\textWidth)
 					
-					Style_Textline(*te, *previousLine, styleFlags)
+					Style_Textline(*te, *previousLine, styleFlags, *undo)
 				EndIf
 				
 				*firstChar = #Null
@@ -4507,15 +4606,25 @@ Module _PBEdit_
 		*te\cursorState\blinkSuspend = 1
 		*te\needDictionaryUpdate = #True
 		
-		If styleFlags <> -1
-			Style_Textline(*te, *cursor\position\textline, styleFlags)
-		EndIf
+		Undo_Add(*te, *undo, #TE_Undo_AddText, previousLineNr, previousCharNr, *cursor\position\lineNr, *cursor\position\charNr)
 		
-		Undo_Add(*undo, #TE_Undo_AddText, previousLineNr, previousCharNr, *cursor\position\lineNr, *cursor\position\charNr)
+		If styleFlags <> -1
+ 			Style_Textline(*te, *cursor\position\textline, styleFlags, *undo)
+		EndIf
 		
 		Cursor_MoveMulti(*te, *cursor, previousLineNr, *cursor\position\lineNr - previousLineNr, *cursor\position\charNr - previousCharNr)
 		
 		ProcedureReturn #True
+	EndProcedure
+	
+	Procedure Textline_ChangeText(*te.TE_STRUCT, *textline.TE_TEXTLINE, charNr, newText.s, *undo.TE_UNDO)
+		ProcedureReturnIf((*te = #Null) Or (*textline = #Null) Or GetFlag(*te, #TE_EnableReadOnly))
+		
+		Protected oldText.s = Mid(*textline\text, charNr, Len(newText))
+		If oldText <> newText
+			Undo_Add(*te, *undo, #TE_Undo_ChangeText, *textline\lineNr, charNr, *te\currentCursor\previousPosition\lineNr, *te\currentCursor\previousPosition\charNr, oldText)
+			ReplaceString(*textline\text, oldText, newText, #PB_String_InPlace, charNr, 1)
+		EndIf
 	EndProcedure
 	
 	Procedure Textline_SetText(*te.TE_STRUCT, *textLine.TE_TEXTLINE, text.s, styleFlags = #TE_Styling_All, *undo.TE_UNDO = #Null)
@@ -4523,12 +4632,12 @@ Module _PBEdit_
 		
 		Protected lineNr = Textline_LineNr(*te, *textLine)
 		
-		Undo_Add(*undo, #TE_Undo_DeleteText, lineNr, 1, 0, 0, *textLine\text)
-		Undo_Add(*undo, #TE_Undo_AddText, lineNr, 1, lineNr, Len(text) + 1)
+		Undo_Add(*te, *undo, #TE_Undo_DeleteText, lineNr, 1, 0, 0, *textLine\text)
+		Undo_Add(*te, *undo, #TE_Undo_AddText, lineNr, 1, lineNr, Len(text) + 1)
 		
 		*textLine\text = text
 		
-		Style_Textline(*te, *textLine, styleFlags)
+		Style_Textline(*te, *textLine, styleFlags, *undo)
 		
 		ProcedureReturn #True
 	EndProcedure
@@ -4555,7 +4664,7 @@ Module _PBEdit_
 				*te\textLine()\text = text
 				*te\textLine()\remark = type
 				Style_Textline(*te, *te\textLine())
-				Undo_Add(*undo, #TE_Undo_AddRemark, ListIndex(*te\textLine()), type)
+				Undo_Add(*te, *undo, #TE_Undo_AddRemark, ListIndex(*te\textLine()), type)
 			EndIf
 		EndIf
 	EndProcedure
@@ -4565,7 +4674,7 @@ Module _PBEdit_
 		
  		Cursor_Position(*te, *te\currentCursor, lineNr, 1)
 		If SelectElement(*te\textLine(), lineNr)
-			Undo_Add(*undo, #TE_Undo_DeleteRemark, ListIndex(*te\textLine()), *te\textLine()\remark, 0, 0, *te\textLine()\text)
+			Undo_Add(*te, *undo, #TE_Undo_DeleteRemark, ListIndex(*te\textLine()), *te\textLine()\remark, 0, 0, *te\textLine()\text)
 			ProcedureReturn Textline_Delete(*te)
 		EndIf
 		
@@ -4861,14 +4970,14 @@ Module _PBEdit_
 		
 		Protected lineNr = *cursor\position\lineNr
 		Protected charNr = *cursor\position\charNr
-		
+
 		Protected *textblock.TE_TEXTBLOCK = Folding_GetTextBlock(*te, *cursor\position\lineNr)
 		If *textblock And (*textblock\firstLine\foldState & #TE_Folding_Folded)
 			Folding_UnfoldTextline(*te, *textblock\firstLineNr)
 		EndIf
 		
 		If *cursor\position\charNr > Textline_Length(*cursor\position\textline)
-			Cursor_Position(*te, *cursor, lineNr + 1, 1)
+			Cursor_Position(*te, *cursor, lineNr + 1, 1, #True, #True, *undo)
 			Selection_SetRange(*te, *cursor, lineNr, charNr)
 			ProcedureReturn Selection_Delete(*te, *cursor, *undo)
 		EndIf
@@ -4887,10 +4996,9 @@ Module _PBEdit_
 				If *textblock And (*textblock\firstLine\foldState & #TE_Folding_Folded)
 					Folding_UnfoldTextline(*te, *textblock\firstLineNr)
 					If lineNr > *textblock\lastLineNr
-						Cursor_Position(*te, *cursor, *textblock\lastLineNr, Textline_LastCharNr(*te, *textblock\lastLineNr)) 
+						Cursor_Position(*te, *cursor, *textblock\lastLineNr, Textline_LastCharNr(*te, *textblock\lastLineNr), #True, #True, *undo) 
 					EndIf
 				EndIf
-				
 				ProcedureReturn Textline_JoinNextLine(*te, *cursor, *undo)
 			EndIf
 		EndIf
@@ -5167,7 +5275,7 @@ Module _PBEdit_
 	
 	Procedure Selection_Delete(*te.TE_STRUCT, *cursor.TE_CURSOR, *undo.TE_UNDO = #Null)
 		ProcedureReturnIf((*te = #Null) Or GetFlag(*te, #TE_EnableReadOnly) Or (*cursor = #Null))
-		
+
 		Protected result = #False
 		Protected text.s
 		Protected previousLineNr
@@ -5195,8 +5303,8 @@ Module _PBEdit_
 			previousLineNr = *cursor\selection\lineNr
 		EndIf
 		
-		Undo_Add(*undo, #TE_Undo_DeleteText, selection\pos1\lineNr, selection\pos1\charNr, 0, 0, Text_Get(*te, selection\pos1\lineNr, selection\pos1\charNr, selection\pos2\lineNr, selection\pos2\charNr))
-		
+		Undo_Add(*te, *undo, #TE_Undo_DeleteText, selection\pos1\lineNr, selection\pos1\charNr, 0, 0, Text_Get(*te, selection\pos1\lineNr, selection\pos1\charNr, selection\pos2\lineNr, selection\pos2\charNr))
+
 		If nrLines = 1
 			*te\textLine()\text = Text_Cut(*te\textLine()\text, selection\pos1\charNr, selection\pos2\charNr - selection\pos1\charNr)
 		ElseIf nrLines = 2
@@ -5222,7 +5330,7 @@ Module _PBEdit_
 		
 		*te\leftBorderOffset = BorderSize(*te)
 		
-		Style_Textline(*te, *te\textLine(), #TE_Styling_UpdateFolding | #TE_Styling_UpdateIndentation)
+		Style_Textline(*te, *te\textLine(), #TE_Styling_UpdateFolding | #TE_Styling_UpdateIndentation, *undo)
 		
 		*cursor\position\textline = *te\textLine()
 		*cursor\position\lineNr = ListIndex(*te\textLine()) + 1
@@ -5314,10 +5422,11 @@ Module _PBEdit_
 					Cursor_Add(*te, ListIndex(*te\textLine()) + 1, Textline_CharNrFromScreenPos(*te, *te\textLine(), *cursor\position\charX), #False)
 				EndIf
 			Until (*te\textLine() = *lastLine) Or (NextElement(*te\textLine()) = #Null)
-			
+
 			PushListPosition(*te\cursor())
 			ForEach *te\cursor()
-				Selection_SetRange(*te, *te\cursor(), *te\cursor()\position\lineNr, Textline_CharNrFromScreenPos(*te, *te\cursor()\position\textline, *cursor\firstPosition\charX), #False, #False)
+				Protected charNr = Textline_CharNrFromScreenPos(*te, *te\cursor()\position\textline, *cursor\firstPosition\charX)
+				Selection_SetRange(*te, *te\cursor(), *te\cursor()\position\lineNr, charNr, #False, #False)
 				CopyStructure(*cursor\firstPosition, *te\cursor()\firstPosition, TE_POSITION)
 			Next
 			PopListPosition(*te\cursor())
@@ -5481,10 +5590,10 @@ Module _PBEdit_
 		EndIf
 		
 		If Selection_Get(*cursor, selection)
-			Undo_Start(*te\undo)
+			Undo_Start(*te, *te\undo)
 			If (direction < 0) And (selection\pos1\lineNr > 1)
 				
-				Cursor_Position(*te, *cursor, selection\pos1\lineNr - 1, 1)
+				Cursor_Position(*te, *cursor, selection\pos1\lineNr - 1, 1, #True, #True, *te\undo)
 				Selection_SetRange(*te, *cursor, selection\pos1\lineNr, 1)
 				text = Text_Get(*te, *cursor\position\lineNr, *cursor\position\charNr, *cursor\selection\lineNr, *cursor\selection\charNr)
 				
@@ -5499,7 +5608,7 @@ Module _PBEdit_
 					Selection_SetRange(*te, *cursor, selection\pos2\lineNr - 1, Textline_LastCharNr(*te, selection\pos2\lineNr - 1))
 				EndIf
 			ElseIf (direction > 0) And (selection\pos2\lineNr < ListSize(*te\textLine()))
-				Cursor_Position(*te, *cursor, selection\pos2\lineNr + 1, 1)
+				Cursor_Position(*te, *cursor, selection\pos2\lineNr + 1, 1, #True, #True, *te\undo)
 				Selection_SetRange(*te, *cursor, selection\pos2\lineNr + 2, 1)
 				text = Text_Get(*te, *cursor\position\lineNr, *cursor\position\charNr, *cursor\selection\lineNr, *cursor\selection\charNr)
 				
@@ -5892,22 +6001,21 @@ Module _PBEdit_
 		ProcedureReturnIf(*te = #Null)
 		
 		Protected result
-		Protected text.s, newTexxt.s
+		Protected text.s, newText.s
 		
 		PushListPosition(*te\cursor())
 		ForEach *te\cursor()
 			text = Text_Get(*te, *te\cursor()\position\lineNr, *te\cursor()\position\charNr, *te\cursor()\selection\lineNr, *te\cursor()\selection\charNr)
 			
 			If mode = #TE_Text_LowerCase
-				newTexxt = LCase(text)
+				newText = LCase(text)
 			Else
-				newTexxt = UCase(text)
+				newText = UCase(text)
 			EndIf
-			
-			If text <> newTexxt
+			If text <> newText
 				Selection_Delete(*te, *te\cursor(), *te\undo)
 				Selection_Start(*te\cursor(), *te\cursor()\position\lineNr, *te\cursor()\position\charNr)
-				result + Textline_AddText(*te, *te\cursor(), @newTexxt, Len(newTexxt), #TE_Styling_All, *te\undo)
+				result + Textline_AddText(*te, *te\cursor(), @newText, Len(newText), #TE_Styling_All | #TE_Styling_NoUndo, *te\undo)
 			EndIf
 		Next
 		PopListPosition(*te\cursor())
@@ -5993,7 +6101,7 @@ Module _PBEdit_
 		Repeat
  			LockMutex(_PBEdit_Mutex)			
   			*te = *window\activeEditor
-			If *te
+  			If *te
 				PostEvent(#TE_Event_CursorBlink, 0, 0, 0, *te)
  			EndIf
  			UnlockMutex(_PBEdit_Mutex)
@@ -6015,7 +6123,6 @@ Module _PBEdit_
 		ForEach *te\cursor()
 			*te\cursor()\clipBoard = ""
 		Next
-
 		
 		position\lineNr = lineNr
 		position\charNr = charNr
@@ -6215,7 +6322,7 @@ Module _PBEdit_
 					
 					If joinSelections And (delete > 1) And Selection_Get(*te\cursor(), selection2)
 						Selection_Add(selection1, selection2\pos1\lineNr, selection2\pos1\charNr)
-						Selection_Add(selection1, selection2\pos2\lineNr, selection2\pos2\charNr)
+						;Selection_Add(selection1, selection2\pos2\lineNr, selection2\pos2\charNr)
 						
 						If *cursor\selection\lineNr > 0
 							If (*cursor\position\lineNr < *cursor\selection\lineNr) Or (*cursor\position\lineNr = *cursor\selection\lineNr And (*cursor\position\charNr < *cursor\selection\charNr))
@@ -6254,6 +6361,7 @@ Module _PBEdit_
 		
 		*te\maincursor = *maincursor
 		*te\currentCursor = *maincursor
+
 		*te\redrawMode | #TE_Redraw_All
 		
 		PostEvent(#TE_Event_Cursor, *te\window, 0, #TE_EventType_Remove)
@@ -6359,10 +6467,11 @@ Module _PBEdit_
 				EndIf
 			EndIf
 		Wend
+		
 		PopListPosition(*te\cursor())
 	EndProcedure
 	
-	Procedure Cursor_Update(*te.TE_STRUCT, *cursor.TE_CURSOR, updateLastX)
+	Procedure Cursor_Update(*te.TE_STRUCT, *cursor.TE_CURSOR, updateLastX, *undo.TE_UNDO = #Null)
 		; needs to be called every time the cursorposition has changed.
 		; - style the previous textline
 		; - prepare redrawing of all cursors
@@ -6381,9 +6490,9 @@ Module _PBEdit_
 		If *cursor\previousPosition\textline And (*cursor\previousPosition\textline <> *cursor\position\textline) And *cursor\previousPosition\textline\needStyling
 			;style the previous textline
 			If Parser_InsideStructure(*te, *cursor\previousPosition\textline, *cursor\previousPosition\charNr)
-				Style_Textline(*te, *cursor\previousPosition\textline, 0);#TE_Styling_UpdateIndentation); | #TE_Styling_UpdateFolding)
+				Style_Textline(*te, *cursor\previousPosition\textline, 0, *undo);#TE_Styling_UpdateIndentation); | #TE_Styling_UpdateFolding)
 			Else
-				Style_Textline(*te, *cursor\previousPosition\textline, #TE_Styling_CaseCorrection | #TE_Styling_UpdateIndentation | #TE_Styling_UpdateFolding)
+				Style_Textline(*te, *cursor\previousPosition\textline, #TE_Styling_CaseCorrection | #TE_Styling_UpdateIndentation | #TE_Styling_UpdateFolding, *undo)
 			EndIf
 			*te\needDictionaryUpdate = #True
 			*cursor\previousPosition\textline\needStyling = #False
@@ -6403,6 +6512,8 @@ Module _PBEdit_
 			result = #True
 		EndIf
 		
+		;*cursor\previousPosition\textline = *cursor\position\textline
+		
 		If Cursor_HasSelection(*cursor) = #False
 			RepeatedSelection_Clear(*te)
 		EndIf
@@ -6416,7 +6527,7 @@ Module _PBEdit_
 		ProcedureReturn result
 	EndProcedure
 	
-	Procedure Cursor_Move(*te.TE_STRUCT, *cursor.TE_CURSOR, dirY, dirX)
+	Procedure Cursor_Move(*te.TE_STRUCT, *cursor.TE_CURSOR, dirY, dirX, *undo.TE_UNDO = #Null)
 		; returnvalues:
 		; #false	-	no current lineNr or cursorposition unchanged
 		; #true		-	lineNr or charNr has changed
@@ -6464,7 +6575,7 @@ Module _PBEdit_
 			Else
 				*cursor\position\charNr = Clamp(*cursor\position\charNr + dirX, 1, Textline_Length(*cursor\position\textline) + 1)
 			EndIf
-			
+
 			ProcedureReturn Cursor_Update(*te, *cursor, #True)
 		EndIf
 		
@@ -6485,11 +6596,11 @@ Module _PBEdit_
 				EndIf
 			EndIf
 			
-			ProcedureReturn Cursor_Update(*te, *cursor, #False)
+			ProcedureReturn Cursor_Update(*te, *cursor, #False, *undo)
 		EndIf
 	EndProcedure
 	
-	Procedure Cursor_Position(*te.TE_STRUCT, *cursor.TE_CURSOR, lineNr, charNr, ensureVisible = #True, updateLastX = #True)
+	Procedure Cursor_Position(*te.TE_STRUCT, *cursor.TE_CURSOR, lineNr, charNr, ensureVisible = #True, updateLastX = #True, *undo.TE_UNDO = #Null)
 		ProcedureReturnIf((*te = #Null) Or (*cursor = #Null) Or (ListSize(*te\textLine()) = 0))
 		
 		If ensureVisible
@@ -6513,7 +6624,7 @@ Module _PBEdit_
 			EndIf
 		EndIf
 		
- 		ProcedureReturn Cursor_Update(*te, *cursor, updateLastX)
+ 		ProcedureReturn Cursor_Update(*te, *cursor, updateLastX, *undo)
 	EndProcedure
 	
 	Procedure Cursor_GetScreenPos(*te.TE_STRUCT, *view.TE_VIEW, x, y, *result.TE_POSITION)
@@ -6636,7 +6747,7 @@ Module _PBEdit_
 		Protected gotoLineNr.s = InputRequester(*te\language\gotoTitle, *te\language\gotoMessage, "")
 		
 		If gotoLineNr
-			Folding_UnfoldTextline(*te, *cursor\position\lineNr, #True)
+			Folding_UnfoldTextline(*te, Val(gotoLineNr), #True)
 			Selection_ClearAll(*te)
 			Cursor_Position(*te, *cursor, Val(gotoLineNr), 1)
 			Scroll_Line(*te, *te\currentView, *cursor, *cursor\position\visibleLineNr - 4)
@@ -6736,7 +6847,7 @@ Module _PBEdit_
 		ElseIf *te\cursorState\dragText = ""
 			abort = #True
 		Else
-			Undo_Start(*te\undo)
+			Undo_Start(*te, *te\undo)
 			
 			SetFlag(*te, #TE_EnableMultiCursor, 1)
 			*newCursor = Cursor_Add(*te, *te\cursorState\dragPosition\lineNr, *te\cursorState\dragPosition\charNr)
@@ -6784,7 +6895,7 @@ Module _PBEdit_
 	Procedure.s ClipBoard_GetSelectedText(*te.TE_STRUCT)
 		ProcedureReturnIf(*te = #Null, "")
 		
-		Protected text.s
+		Protected text.s, cursorText.s
 		Protected cursorCount = ListSize(*te\cursor()) - 1
 		
 		If cursorCount > 0
@@ -6792,9 +6903,10 @@ Module _PBEdit_
 		Else
 			SetFlag(*te, #TE_EnableMultiCursorPaste, 0)
 		EndIf
-		
+
 		PushListPosition(*te\cursor())
 		ForEach *te\cursor()
+			cursorText = ""
 			With *te\cursor()
 				If cursorCount > 0
 					If Cursor_HasSelection(*te\cursor())
@@ -6802,16 +6914,21 @@ Module _PBEdit_
  					Else
  						\clipBoard = ""
 					EndIf
-					text + \clipBoard
+					cursorText =  \clipBoard
 				Else
 					If Cursor_HasSelection(*te\cursor())
-						text + Text_Get(*te, \position\lineNr, \position\charNr, \selection\lineNr, \selection\charNr)
+						cursorText = Text_Get(*te, \position\lineNr, \position\charNr, \selection\lineNr, \selection\charNr)
 					EndIf
 				EndIf
 			EndWith
-			If ListIndex(*te\cursor()) < cursorCount
-				text + *te\newLineText
+			
+			If cursorText
+				text + cursorText
+				If ListIndex(*te\cursor()) < cursorCount
+					text + *te\newLineText
+				EndIf
 			EndIf
+			
 		Next
 		PopListPosition(*te\cursor())
 
@@ -6898,7 +7015,9 @@ Module _PBEdit_
 				EndIf
 				
 				If GetFlag(*te, #TE_EnableMultiCursorPaste)
-					Textline_AddText(*te, *te\cursor(), @*te\cursor()\clipBoard, Len(*te\cursor()\clipBoard), #TE_Styling_CaseCorrection | #TE_Styling_UpdateFolding | #TE_Styling_UpdateIndentation | #TE_Styling_UnfoldIfNeeded, *te\undo)
+					If *te\cursor()\clipBoard
+						Textline_AddText(*te, *te\cursor(), @*te\cursor()\clipBoard, Len(*te\cursor()\clipBoard), #TE_Styling_CaseCorrection | #TE_Styling_UpdateFolding | #TE_Styling_UpdateIndentation | #TE_Styling_UnfoldIfNeeded, *te\undo)
+					EndIf
 				Else
 					Textline_AddText(*te, *te\cursor(), @text, Len(text), #TE_Styling_CaseCorrection | #TE_Styling_UpdateFolding | #TE_Styling_UpdateIndentation | #TE_Styling_UnfoldIfNeeded, *te\undo)
 				EndIf
@@ -7624,12 +7743,12 @@ Module _PBEdit_
 			Next
 		EndIf
 		
-		ForEach *te\autoCompleteList()
-			If (Len(*te\autoCompleteList()) >= textLen)
-				If (Left(LCase(*te\autoCompleteList()), textLen) = lText)
+		ForEach *te\dictionary()
+			If (Len(*te\dictionary()) >= textLen)
+				If (Left(LCase(*te\dictionary()), textLen) = lText)
 					If AddElement(*te\autoComplete\entry())
-						*te\autoComplete\entry()\name = *te\autoCompleteList()
-						*te\autoComplete\entry()\length = Len(*te\autoCompleteList())
+						*te\autoComplete\entry()\name = *te\dictionary()
+						*te\autoComplete\entry()\length = Len(*te\dictionary())
 					EndIf
 				EndIf
 			EndIf
@@ -7783,7 +7902,7 @@ Module _PBEdit_
 		
 		Protected text.s = Text_Get(*te, startLineNr, 1, endLineNr, Textline_LastCharNr(*te, endLineNr))
 		
-		ClearMap(*te\autoCompleteList())
+		ClearMap(*te\dictionary())
 		
 		If ExamineRegularExpression(*te\regExDictionary, text)
 			While NextRegularExpressionMatch(*te\regExDictionary)
@@ -7791,7 +7910,7 @@ Module _PBEdit_
 				If matchString <> textAtCursor
 					key = LCase(matchString)
 					If FindMapElement(*te\keyWord(), key) = 0
-						*te\autoCompleteList(key) = matchString
+						*te\dictionary(key) = matchString
 					EndIf
 				Else
 					textAtCursor = ""
@@ -8103,14 +8222,19 @@ Module _PBEdit_
 		EndIf
 	EndProcedure
 	
-	Procedure Draw_Cursor(*te.TE_STRUCT, x.d, y.d, width.d, height.d, cursorType)
+	Procedure Draw_Cursor(*te.TE_STRUCT, x.d, y.d, width.d, height.d, cursorType, isCurrentCursor.a)
 		ProcedureReturnIf(*te = #Null)
+		
+		Protected cursorWidth.d = 1
+		If isCurrentCursor
+			cursorWidth = 2.5
+		EndIf
 		
 		If cursorType = #TE_Cursor_Normal
 			If *te\cursorState\overwrite
-				Draw_Line(x, y + height - 2, width, 0, *te\colors\cursor, 1.5)
+				Draw_Line(x, y + height - 2, width, 0, *te\colors\cursor, cursorWidth)
 			Else
-				Draw_Line(x + #TE_VectorDrawWidth, y + 1.75, 0, height - 3.5, *te\colors\cursor, 1.5)
+				Draw_Line(x + #TE_VectorDrawWidth, y + 1.75, 0, height - 3.5, *te\colors\cursor, cursorWidth)
 			EndIf
 		ElseIf cursorType = #TE_Cursor_DragDrop Or cursorType = #TE_Cursor_DragDropForbidden
 			
@@ -8286,23 +8410,27 @@ Module _PBEdit_
 		If *cursor
 			Selection_Get(*cursor, selection)
 			If lineNr > selection\pos1\lineNr And lineNr < selection\pos2\lineNr
-				selection(1) | 1
+				selection(1) | %001
 			EndIf
 		EndIf
 		
 		Repeat
 			
 			If *te\cursorState\dragDropMode And (lineNr = *te\cursorState\dragPosition\lineNr) And (charNr = *te\cursorState\dragPosition\charNr)
-				selection(charNr) | 2
+				selection(charNr) | %010
 			EndIf
 			
 			selected = 0
 			Protected testSelection = #True
+			
 			While *cursor And testSelection
 				testSelection = #False
 				
 				If lineNr = *cursor\position\lineNr And charNr = *cursor\position\charNr
-					selection(charNr) | 2
+					selection(charNr) | %010
+					If *cursor = *te\maincursor
+						selection(charNr) | %100
+					EndIf
 				EndIf
 				
 				If selected = #False
@@ -8327,12 +8455,13 @@ Module _PBEdit_
 			Wend
 			
 			If selected
-				selection(charNr) | 1
+				selection(charNr) | %001
 				If selectionX = 0
 					selectionX = x
 				EndIf
 			Else
 				If selectionX
+; 					Draw_RoundBox(selectionX, y, x - selectionX + 1, height, height * 0.25, 0, #TE_Ignore, *te\colors\selectionBackground, 0)
 					Draw_RoundBox(selectionX, y, x - selectionX + 1, height, height * 0.25, 0, #TE_Ignore, *te\colors\selectionBackground, 0)
 					selectionX = 0
 				EndIf
@@ -8584,7 +8713,7 @@ Module _PBEdit_
 			
 			If drawCursor
 				If (*view <> *te\currentView) Or (*te\cursorState\blinkState Or *te\cursorState\dragDropMode > 0)
-					Draw_Cursor(*te, x, y, width, height, drawCursor)
+					Draw_Cursor(*te, x, y, width, height, drawCursor, selection(charNr) & %100)
 				EndIf
 				drawCursor = 0
 			EndIf
@@ -9310,7 +9439,7 @@ Module _PBEdit_
 			ProcedureReturn #True
 		EndIf
 		
-		*te\undo\index = Undo_Start(*te\undo)
+		*te\undo\index = Undo_Start(*te, *te\undo)
 		*te\undo\start = 1
 		*te\needScrollUpdate = #True
 		
@@ -9344,7 +9473,7 @@ Module _PBEdit_
 							If *te\currentCursor And Parser_InsideStructure(*te, *te\currentCursor\position\textline, *te\currentCursor\position\charNr - 1)
 								styleFlags = #TE_Styling_UpdateFolding
 							Else
-								styleFlags = #TE_Styling_CaseCorrection | #TE_Styling_UpdateFolding
+ 								styleFlags = #TE_Styling_CaseCorrection | #TE_Styling_UpdateFolding
 							EndIf
 							*te\needDictionaryUpdate = #True
 					EndSelect
@@ -9359,7 +9488,9 @@ Module _PBEdit_
 							Else
 								overwriteMode = *te\cursorState\overwrite
 							EndIf
+							
 							Textline_AddChar(*te, *cursor, key, overwriteMode, styleFlags, *te\undo)
+							
 							Folding_UnfoldTextline(*te, *cursor\position\lineNr)
 							
 							If *cursor\position\textline
@@ -9502,9 +9633,7 @@ Module _PBEdit_
 				Case #PB_Shortcut_F4
 					
 					If modifiers & #PB_Canvas_Control
-						ForEach *te\textBlock()
-							needredraw + Folding_Toggle(*te, *te\textBlock()\firstLineNr)
-						Next
+						Folding_ToggleAll(*te)
 					Else
 						needredraw + Folding_Toggle(*te, *te\currentCursor\position\lineNr)
 					EndIf
@@ -9766,7 +9895,7 @@ Module _PBEdit_
 							If modifiers & #PB_Canvas_Control
 								
 								If modifiers & #PB_Canvas_Shift
-									Cursor_Position(*te, *te\cursor(), *te\cursor()\position\lineNr, 1)
+									Cursor_Position(*te, *te\cursor(), *te\cursor()\position\lineNr, 1, #True, #True)
 								Else
 									Cursor_NextWord(*te, *te\cursor(), -1)
 								EndIf
@@ -9787,13 +9916,13 @@ Module _PBEdit_
 										Protected nextChar1 = Textline_CharAtPos(*te\cursor()\position\textline, *te\cursor()\position\charNr - 1)
 										Protected nextChar2 = Textline_CharAtPos(*te\cursor()\position\textline, *te\cursor()\position\charNr)
 										If GetFlag(*te, #TE_EnableAutoClosingBracket) And (nextChar1 = '(' And nextChar2 = ')') Or (nextChar1 = '[' And nextChar2 = ']') Or (nextChar1 = '{' And nextChar2 = '}')
-											Cursor_Move(*te, *te\cursor(), 0, -1)
+											Cursor_Move(*te, *te\cursor(), 0, -1, *te\undo)
 											Selection_SetRange(*te, *te\cursor(), *te\cursor()\position\lineNr, *te\cursor()\position\charNr + 2, #False)
 										Else
 											Selection_SetRange(*te, *te\cursor(), *te\cursor()\position\lineNr, *te\cursor()\position\charNr - 1, #False)
 										EndIf
 										
-										Selection_Delete(*te, *te\cursor(), *te\undo)
+ 										Selection_Delete(*te, *te\cursor(), *te\undo)
 									EndIf
 								EndIf
 								
@@ -9829,11 +9958,11 @@ Module _PBEdit_
 						Until (PreviousElement(*te\cursor()) = #Null)
 					EndIf
 					
-					CompilerIf #PB_Compiler_OS = #PB_OS_Linux
-					Case #PB_Shortcut_Return, #TE_Shortcut_PadReturn
-					CompilerElse
-					Case #PB_Shortcut_Return
-					CompilerEndIf
+				CompilerIf #PB_Compiler_OS = #PB_OS_Linux
+				Case #PB_Shortcut_Return, #TE_Shortcut_PadReturn
+				CompilerElse
+				Case #PB_Shortcut_Return
+				CompilerEndIf
 					
 					If LastElement(*te\cursor())
 						Repeat
@@ -9859,7 +9988,6 @@ Module _PBEdit_
 					Next
 					ForEach *te\cursor()
 						Protected indentation = Indentation_Range(*te, *te\cursor()\position\lineNr - 1, *te\cursor()\position\lineNr, #Null, *te\indentationMode)
-						Indentation_Range(*te, *te\cursor()\position\lineNr - 1, *te\cursor()\position\lineNr, #Null, *te\indentationMode)
 						Cursor_Position(*te, *te\cursor(), *te\cursor()\position\lineNr, indentation)
 					Next
 					
@@ -9975,7 +10103,7 @@ Module _PBEdit_
 						Else
 							ForEach *te\cursor()
 								Selection_Start(*te\cursor(), *te\cursor()\position\lineNr, *te\cursor()\position\charNr, modifiers & #PB_Canvas_Shift)
-								needredraw + Cursor_Move(*te, *te\cursor(), 1, 0)
+								needredraw + Cursor_Move(*te, *te\cursor(), 1, 0, *te\undo)
 							Next
 						EndIf
 					EndIf
@@ -10168,296 +10296,442 @@ Module _PBEdit_
 		
 	EndProcedure
 	
+	Procedure Event_Mouse_LeftButtonDown(*te.TE_STRUCT, *view.TE_VIEW, *cursor.TE_CURSOR)
+		Protected *cursorState.TE_CURSORSTATE = *te\cursorState
+		
+		*cursorState\firstMousePosition = *cursorState\mousePosition
+		
+		If *cursorState\mousePosition = #TE_MousePosition_AutoComplete
+			ProcedureReturn 1
+		ElseIf *cursorState\mousePosition = #TE_MousePosition_AutoCompleteScrollBar
+			*te\autoComplete\lastScrollPos = *te\autoComplete\scrollLine
+			*te\autoComplete\scollMousePos = *cursorState\mouseY
+			*te\autoComplete\scrollDistance = 0
+			ProcedureReturn 1
+		EndIf
+		Autocomplete_Hide(*te.TE_STRUCT)
+		
+		If (*cursorState\time - *cursorState\firstClickTime) > *cursorState\clickSpeed
+			*cursorState\clickCount = 0
+		EndIf
+		*cursorState\firstClickTime = *cursorState\time
+
+		If Cursor_GetScreenPos(*te, *view, *cursorState\canvasMouseX, *cursorState\canvasMouseY, *cursorState\position) = #False
+			ProcedureReturn 1
+		EndIf
+		
+		If GetFlag(*te, #TE_EnableSelection) And Position_Equal(*cursorState\position, *cursorState\previousPosition)
+			*cursorState\clickCount + 1
+		Else
+			*cursorState\clickCount = 1
+		EndIf
+		
+		If *cursorState\clickCount = 1
+			If (*cursorState\modifiers & #PB_Canvas_Shift) = 0
+				
+				If *cursorState\dragStart = #False
+					If *cursorState\modifiers & #PB_Canvas_Control
+						*cursor = Cursor_Add(*te, *cursorState\position\lineNr, *cursorState\position\charNr)
+						If *cursor = #Null
+							ProcedureReturn 1
+						EndIf
+						CopyStructure(*cursor\position, *cursorState\position, TE_POSITION)
+					ElseIf (*cursorState\mousePosition <> #TE_MousePosition_FoldState) And (*cursorState\modifiers & #PB_Canvas_Alt = 0)
+						Cursor_Clear(*te, *cursor)
+					EndIf
+				EndIf
+				
+				If *cursorState\mousePosition = #TE_MousePosition_TextArea
+					If Position_InsideSelection(*te, *view, *cursorState\mouseX, *cursorState\mouseY)
+						*cursorState\dragStart = #True
+						CopyStructure(*cursorState\position, *cursorState\previousPosition, TE_POSITION)
+						ProcedureReturn 1
+					EndIf
+				EndIf
+				
+				*cursorState\firstClickX = *cursorState\canvasMouseX
+				*cursorState\firstClickY = *cursorState\canvasMouseY
+
+				CopyStructure(*cursorState\position, *cursor\firstPosition, TE_POSITION)
+			EndIf
+		EndIf
+		
+		If *cursorState\mousePosition = #TE_MousePosition_LineNumber
+			
+			If GetFlag(*te, #TE_EnableSelection)
+				If (*cursorState\modifiers & #PB_Canvas_Control) And (GetFlag(*te, #TE_EnableMultiCursor) = 0)
+					Selection_SelectAll(*te)
+				Else
+					Undo_Start(*te, *te\undo)
+					
+					If *cursorState\modifiers & #PB_Canvas_Shift
+						If *cursorState\position\lineNr <= *cursor\firstPosition\lineNr
+							Cursor_Position(*te, *cursor, *cursorState\position\lineNr, 1, #False, #True, *te\undo)
+							Selection_SetRange(*te, *cursor, *cursorState\firstSelection\pos1\lineNr, Textline_LastCharNr(*te, *cursorState\firstSelection\pos1\lineNr))
+						Else
+							Cursor_Position(*te, *cursor, *cursorState\position\lineNr + 1, 1, #False, #True, *te\undo)
+							Selection_SetRange(*te, *cursor, *cursorState\firstSelection\pos1\lineNr, *cursorState\firstSelection\pos1\charNr)
+						EndIf
+					Else
+						Cursor_Position(*te, *cursor, *cursorState\position\lineNr + 1, 1, #False, #True, *te\undo)
+						
+						Selection_SetRange(*te, *cursor, *cursorState\position\lineNr, 1)
+						Selection_Get(*cursor, *cursorState\firstSelection)
+						CopyStructure(*cursorState\position, *cursor\firstPosition, TE_POSITION)
+					EndIf
+				EndIf
+				Undo_Update(*te)
+			EndIf
+			
+		ElseIf *cursorState\mousePosition = #TE_MousePosition_FoldState
+			
+			If *cursorState\position\textline And (*cursorState\position\textline\foldState > 0)
+				Protected scrollLineNr = *view\scroll\visibleLineNr
+				Folding_Toggle(*te, *cursorState\position\lineNr)
+				*cursorState\dragDropMode = -1
+			EndIf
+			
+		ElseIf *cursorState\mousePosition = #TE_MousePosition_TextArea
+
+			If *cursorState\clickCount = 1
+				
+				If (*cursorState\modifiers & #PB_Canvas_Shift = 0) And (*cursorState\modifiers & #PB_Canvas_Control = 0); And (*cursorState\state = 0)
+					Selection_Start(*cursor, *cursorState\position\lineNr, *cursorState\position\charNr)
+					; *te\redrawMode = #TE_Redraw_All
+				EndIf
+				
+				Undo_Start(*te, *te\undo)
+				Cursor_Position(*te, *cursor, *cursorState\position\lineNr, *cursorState\position\charNr, #True, #True, *te\undo)
+				Undo_Update(*te)
+				
+				If GetFlag(*te, #TE_EnableSelection) = 0
+					Selection_ClearAll(*te)
+				EndIf
+				
+				CopyStructure(*cursor\position, *cursor\firstPosition, TE_POSITION)
+				
+				If (*cursorState\modifiers & #PB_Canvas_Shift) = 0
+					Selection_Get(*cursor, *cursorState\firstSelection)
+				EndIf
+				
+			ElseIf *cursorState\clickCount = 2
+	
+				If (*cursorState\position\lineNr = *cursorState\previousPosition\lineNr) And (*cursorState\position\charNr = *cursorState\previousPosition\charNr)
+					; double-click:		select the word under the cursor
+					
+					If Selection_WholeWord(*te, *cursor, *cursorState\position\lineNr, *cursorState\position\charNr)
+						CopyStructure(*cursor\position, *cursor\firstPosition, TE_POSITION)
+						Selection_Get(*cursor, *cursorState\firstSelection)
+					EndIf
+					
+				EndIf
+				
+			ElseIf *cursorState\clickCount = 3
+				; tripple-click:	select whole line
+				
+				Selection_SetRange(*te, *cursor, *cursorState\position\lineNr, 1)
+				Cursor_Position(*te, *cursor, *cursorState\position\lineNr + 1, 1)
+				
+				CopyStructure(*cursor\position, *cursor\firstPosition, TE_POSITION)
+				Selection_Get(*cursor, *cursorState\firstSelection)
+				
+			ElseIf (*cursorState\clickCount = 4)
+				; quadruple-click:		select all
+				
+				Selection_SelectAll(*te)
+			EndIf
+			
+		EndIf
+		
+		If *te\needFoldUpdate
+			Folding_Update(*te, -1, -1)
+		EndIf
+		
+		Cursor_DeleteOverlapping(*te, *cursor)
+		
+		If ListSize(*te\cursor()) = 1 And Cursor_HasSelection(*te\currentCursor) = #False
+			SyntaxHighlight_Start(*te, *te\currentCursor)
+		Else
+			*te\highlightSyntax = 0
+		EndIf
+		
+		Cursor_LineHistoryAdd(*te)
+		
+		; 				RepeatedSelection_Clear(*te)
+		; 				RepeatedSelection_Update(*te, *cursor\position\lineNr, *cursor\position\charNr, *cursor\selection\lineNr, *cursor\selection\charNr)
+		
+		
+		CopyStructure(*cursorState\position, *cursorState\previousPosition, TE_POSITION)
+		
+		Find_SetSelectionCheckbox(*te)
+		
+		*cursorState\needRedraw = #True
+	EndProcedure
+	
+	Procedure Event_Mouse_LeftButtonUp(*te.TE_STRUCT, *view.TE_VIEW, *cursor.TE_CURSOR)
+
+		Protected *cursorState.TE_CURSORSTATE = *te\cursorState
+		
+		If (*te\autoComplete\isScrolling = #False) And *cursorState\mousePosition = #TE_MousePosition_AutoComplete
+			*te\autoComplete\index = Clamp( (*cursorState\mouseY - *te\autoComplete\y - *te\topBorderSize) / *te\lineHeight - *te\autoComplete\scrollLine, 0, ListSize(*te\autoComplete\entry()) - 1)
+			
+			PostEvent(#TE_Event_Redraw, 0, 0, #TE_EventType_RedrawAll, *te\view)
+			ProcedureReturn 1
+		EndIf
+		
+		*te\redrawMode = #TE_Redraw_All
+		*te\autoComplete\isScrolling = #False
+		
+		If (*cursorState\time - *cursorState\firstClickTime) > *cursorState\clickSpeed
+			*cursorState\clickCount = 0
+		EndIf
+		
+		If *cursorState\clickCount = 3
+			*cursorState\clickCount = 0
+		EndIf		
+		If (*cursorState\dragDropMode = #TE_CursorState_Idle) Or (*cursorState\dragDropMode = #TE_CursorState_DragCancel)
+			*cursorState\dragDropMode = 0
+			*te\redrawMode = #TE_Redraw_All
+		ElseIf (*cursorState\dragDropMode = #TE_CursorState_DragCopy) Or (*cursorState\dragDropMode = #TE_CursorState_DragMove)
+			DragDrop_Drop(*te)
+		ElseIf *cursorState\mousePosition = #TE_MousePosition_TextArea
+			If *cursorState\clickCount = 1
+				If Cursor_GetScreenPos(*te, *view, *cursorState\canvasMouseX, *cursorState\canvasMouseY, *cursorState\position)
+					If Position_Equal(*cursorState\position, *cursorState\previousPosition)
+						If (*cursorState\modifiers & #PB_Canvas_Shift) = 0 And (*cursorState\modifiers & #PB_Canvas_Control) = 0
+							Selection_Clear(*te, *cursor)
+						EndIf
+						If (*cursorState\modifiers & #PB_Canvas_Control) = 0
+							Cursor_Clear(*te, *cursor)
+						EndIf
+					
+						Cursor_Position(*te, *cursor, *cursorState\previousPosition\lineNr, *cursorState\previousPosition\charNr)
+					EndIf
+				EndIf
+			EndIf
+		EndIf
+		
+		*view\scroll\autoScrollV = #False
+		*view\scroll\autoScrollH = #False
+		RemoveWindowTimer(*te\window, #TE_Timer_Scroll)
+		
+		If *te\currentCursor And RepeatedSelection_Update(*te, *te\currentCursor\position\lineNr, *te\currentCursor\position\charNr, *te\currentCursor\selection\lineNr, *te\currentCursor\selection\charNr) = #False
+			RepeatedSelection_Clear(*te)
+		EndIf
+		
+		Find_SetSelectionCheckbox(*te)
+	EndProcedure
+	
+	Procedure Event_Mouse_Move(*te.TE_STRUCT, *view.TE_VIEW, *cursor.TE_CURSOR)
+		Protected *cursorState.TE_CURSORSTATE = *te\cursorState
+		
+		If (*cursorState\buttons & #PB_Canvas_LeftButton And *cursorState\mousePosition = #TE_MousePosition_AutoCompleteScrollBar) Or *te\autoComplete\isScrolling 
+			If *te\autoComplete\height
+				*te\autoComplete\isScrolling = #True
+				*te\autoComplete\scrollDistance = (*te\autoComplete\scollMousePos - *cursorState\mouseY)
+				*te\autoComplete\scrollLine = *te\autoComplete\lastScrollPos + (*te\autoComplete\scrollDistance / DesktopScaledY(*te\autoComplete\height)) * ListSize(*te\autoComplete\entry())
+				*te\autoComplete\scrollLine = Clamp(*te\autoComplete\scrollLine, -(ListSize(*te\autoComplete\entry()) - *te\autoComplete\maxRows), 0)
+				PostEvent(#TE_Event_Redraw, 0, 0, #TE_EventType_RedrawAll, *te\view)
+			EndIf
+			ProcedureReturn 1
+		EndIf
+		
+		If *cursorState\mousePosition = #TE_MousePosition_AutoComplete
+			SetGadgetAttribute(*view\canvas, #PB_Canvas_Cursor, #PB_Cursor_Default)
+			ProcedureReturn 1
+		EndIf
+		
+		If *cursorState\dragStart And (*cursorState\clickCount = 1)
+			DragDrop_Start(*te)
+		EndIf
+		
+		If *cursorState\dragDropMode
+			*te\redrawMode = #TE_Redraw_All
+		EndIf
+		
+		*view\scroll\scrollDelay = 0
+		If *cursorState\buttons & #PB_Canvas_LeftButton
+			Protected yTop = DesktopScaledY(GadgetY(*view\canvas, #PB_Gadget_ScreenCoordinate)) + (*te\lineHeight * 0.5) * *view\zoom
+			Protected yBottom = DesktopScaledY(GadgetY(*view\canvas, #PB_Gadget_ScreenCoordinate) + GadgetHeight(*view\canvas)) - (*te\lineHeight * 0.5) * *view\zoom
+			Protected xLeft = DesktopScaledX(GadgetX(*view\canvas, #PB_Gadget_ScreenCoordinate) + *te\leftBorderOffset / *view\zoom)
+			Protected xRight = DesktopScaledX(GadgetX(*view\canvas, #PB_Gadget_ScreenCoordinate) + GadgetWidth(*view\canvas)) - (*te\lineHeight * 0.5) * *view\zoom
+			
+			If (*cursorState\desktopMouseY < yTop) Or (*cursorState\desktopMouseY > yBottom)
+				If *view\scroll\autoScrollV = #False
+					*view\scroll\autoScrollV = #True
+					RemoveWindowTimer(*te\window, #TE_Timer_Scroll)
+					AddWindowTimer(*te\window, #TE_Timer_Scroll, 25)
+				EndIf
+				ProcedureReturn 1
+			ElseIf *view\scroll\autoScrollV
+				*view\scroll\autoScrollV = #False
+				RemoveWindowTimer(*te\window, #TE_Timer_Scroll)
+			EndIf
+			
+			If (*cursorState\desktopMouseX < xLeft) Or (*cursorState\desktopMouseX > xRight)
+				If *view\scroll\autoScrollH = #False
+					*view\scroll\autoScrollH = #True
+					RemoveWindowTimer(*te\window, #TE_Timer_Scroll)
+					AddWindowTimer(*te\window, #TE_Timer_Scroll, 25)
+				EndIf
+				; ProcedureReturn 1
+			ElseIf *view\scroll\autoScrollH
+				*view\scroll\autoScrollH = #False
+				RemoveWindowTimer(*te\window, #TE_Timer_Scroll)
+			EndIf
+		EndIf
+		
+		If *cursorState\mousePosition = #TE_MousePosition_TextArea
+			SetGadgetAttribute(*view\canvas, #PB_Canvas_Cursor, #PB_Cursor_IBeam)
+		ElseIf *cursorState\mousePosition = #TE_MousePosition_LineNumber
+			SetGadgetAttribute(*view\canvas, #PB_Canvas_Cursor, #PB_Cursor_Hand)
+		Else
+			SetGadgetAttribute(*view\canvas, #PB_Canvas_Cursor, #PB_Cursor_Default)
+		EndIf
+		
+		If (*cursorState\buttons = #PB_Canvas_LeftButton) And GetFlag(*te, #TE_EnableSelection)
+			
+			If Cursor_GetScreenPos(*te, *view, *cursorState\canvasMouseX, *cursorState\canvasMouseY , *cursorState\position); And Position_Changed(*cursor\previousPosition, position)
+				
+				If *cursorState\dragDropMode
+					CopyStructure(*cursorState\position, *cursorState\dragPosition, TE_POSITION)
+				Else
+					
+					If Position_InsideRange(*cursorState\position, *cursorState\firstSelection, #False) And (*cursorState\clickCount > 1)
+						Selection_SetRange(*te, *cursor, *cursorState\firstSelection\pos1\lineNr, *cursorState\firstSelection\pos1\charNr)
+						Cursor_Position(*te, *cursor, *cursorState\firstSelection\pos2\lineNr, *cursorState\firstSelection\pos2\charNr)
+					Else
+						If (*cursorState\mousePosition = #TE_MousePosition_LineNumber) Or (Abs(*cursorState\firstSelection\pos1\lineNr - *cursorState\firstSelection\pos2\lineNr) = 1 And *cursorState\firstSelection\pos1\charNr = 1 And *cursorState\firstSelection\pos1\charNr = 1)
+							If *cursorState\firstMousePosition = #TE_MousePosition_LineNumber
+								If *cursorState\position\lineNr < *cursorState\firstSelection\pos1\lineNr
+									Cursor_Position(*te, *cursor, *cursorState\position\lineNr, 1)
+									Selection_SetRange(*te, *cursor, *cursorState\firstSelection\pos1\lineNr, Textline_LastCharNr(*te, *cursorState\firstSelection\pos1\lineNr))
+								Else
+									Cursor_Position(*te, *cursor, *cursorState\position\lineNr + 1, 1)
+									Selection_SetRange(*te, *cursor, *cursorState\firstSelection\pos1\lineNr, 1)
+								EndIf
+							Else
+								If *cursorState\position\lineNr <= *cursorState\firstSelection\pos1\lineNr
+									Cursor_Position(*te, *cursor, *cursorState\position\lineNr, 1)
+									Selection_SetRange(*te, *cursor, *cursorState\firstSelection\pos2\lineNr, *cursorState\firstSelection\pos2\charNr)
+								Else
+									Cursor_Position(*te, *cursor, *cursorState\position\lineNr, 1)
+									Selection_SetRange(*te, *cursor, *cursorState\firstSelection\pos1\lineNr, *cursorState\firstSelection\pos1\charNr)
+								EndIf
+							EndIf
+						Else
+							CopyStructure(*cursorState\firstSelection, *cursorState\selection, TE_RANGE)
+							Selection_Add(*cursorState\selection, *cursorState\position\lineNr, *cursorState\position\charNr)
+							
+							Cursor_Position(*te, *cursor, *cursorState\position\lineNr, *cursorState\position\charNr)
+							
+							If Position_InsideRange(*cursorState\position, *cursorState\selection, #False) < 0
+								Selection_SetRange(*te, *cursor, *cursorState\selection\pos2\lineNr, *cursorState\selection\pos2\charNr)
+							Else
+								Selection_SetRange(*te, *cursor, *cursorState\selection\pos1\lineNr, *cursorState\selection\pos1\charNr)
+							EndIf
+							
+							; 									If Position_Changed(*cursor\previousPosition, *cursor\position)
+							; 										*te\redrawMode = #TE_Redraw_All
+							; 									EndIf
+							
+						EndIf
+					EndIf
+					
+					If *cursorState\modifiers & #PB_Canvas_Alt
+						Selection_SetRectangle(*te, *cursor)
+					Else
+						Cursor_DeleteOverlapping(*te, *cursor)
+					EndIf
+					
+				EndIf
+				
+			EndIf
+			
+			*cursorState\needRedraw = #True
+		EndIf
+	EndProcedure
+
 	Procedure Event_Mouse(*te.TE_STRUCT, *view.TE_VIEW, event_type)
 		ProcedureReturnIf((*te = #Null) Or (*view = #Null) Or (*te\currentCursor = #Null) Or (IsGadget(*view\canvas) = 0))
 		
-		Protected time = ElapsedMilliseconds()
-		Protected mx, my, modifiers, buttons
-		Protected addCursor = #False
-		Protected *cursor.TE_CURSOR = *te\currentCursor
-		Protected *token.TE_TOKEN
-		Protected mousePosition = #TE_MousePosition_TextArea
-		Protected selection.TE_RANGE, previousSelection.TE_RANGE
-		Protected position.TE_POSITION
-		Protected needRedraw = #False
 		
-		mx = GetGadgetAttribute(*view\canvas, #PB_Canvas_MouseX) * *view\zoom
-		my = GetGadgetAttribute(*view\canvas, #PB_Canvas_MouseY) * *view\zoom
-		modifiers = *te\cursorState\modifiers
-		buttons = *te\cursorState\buttons
+		Protected *cursorState.TE_CURSORSTATE = *te\cursorState
 		
-		*te\cursorState\buttons = GetGadgetAttribute(*view\canvas, #PB_Canvas_Buttons)
-		*te\cursorState\modifiers = GetGadgetAttribute(*view\canvas, #PB_Canvas_Modifiers)
-		*te\cursorState\mouseX = DesktopUnscaledX(mx)
-		*te\cursorState\mouseY = DesktopUnscaledY(my)
-		*te\cursorState\windowMouseX = WindowMouseX(*te\window)
-		*te\cursorState\windowMouseY = WindowMouseY(*te\window)
-		*te\cursorState\deltaX = *te\cursorState\desktopMouseX - DesktopMouseX()
-		*te\cursorState\deltaY = *te\cursorState\desktopMouseY - DesktopMouseY()
-		*te\cursorState\desktopMouseX = DesktopMouseX()
-		*te\cursorState\desktopMouseY = DesktopMouseY()
+		*cursorState\needRedraw = #False
+		*cursorState\time = ElapsedMilliseconds()
+		*cursorState\mousePosition = #TE_MousePosition_TextArea
+		*cursorState\canvasMouseX = GetGadgetAttribute(*view\canvas, #PB_Canvas_MouseX) * *view\zoom
+		*cursorState\canvasMouseY = GetGadgetAttribute(*view\canvas, #PB_Canvas_MouseY) * *view\zoom
+		*cursorState\buttons = GetGadgetAttribute(*view\canvas, #PB_Canvas_Buttons)
+		*cursorState\modifiers = GetGadgetAttribute(*view\canvas, #PB_Canvas_Modifiers)
+		*cursorState\mouseX = DesktopUnscaledX(*cursorState\canvasMouseX)
+		*cursorState\mouseY = DesktopUnscaledY(*cursorState\canvasMouseY)
+		*cursorState\windowMouseX = WindowMouseX(*te\window)
+		*cursorState\windowMouseY = WindowMouseY(*te\window)
+		*cursorState\deltaX = *cursorState\desktopMouseX - DesktopMouseX()
+		*cursorState\deltaY = *cursorState\desktopMouseY - DesktopMouseY()
+		*cursorState\desktopMouseX = DesktopMouseX()
+		*cursorState\desktopMouseY = DesktopMouseY()
 		
-		Selection_Get(*cursor, selection)
-		Selection_GetAll(*te, previousSelection)
+		Selection_Get(*te\currentCursor, *cursorState\selection)
+		Selection_GetAll(*te, *cursorState\previousSelection)
+
 		
 		If *te\autoComplete\isVisible And
-		   (*te\cursorState\mouseX > *te\autoComplete\x) And (*te\cursorState\mouseX < (*te\autoComplete\x + *te\autoComplete\width)) And
-		   (*te\cursorState\mouseY > *te\autoComplete\y) And (*te\cursorState\mouseY < (*te\autoComplete\y + *te\autoComplete\height))
-			If *te\cursorState\mouseX > (*te\autoComplete\x + *te\autoComplete\width - *te\autoComplete\scrollBarWidth)
-				mousePosition = #TE_MousePosition_AutoCompleteScrollBar
+		   (*cursorState\mouseX > *te\autoComplete\x) And (*cursorState\mouseX < (*te\autoComplete\x + *te\autoComplete\width)) And
+		   (*cursorState\mouseY > *te\autoComplete\y) And (*cursorState\mouseY < (*te\autoComplete\y + *te\autoComplete\height))
+			If *cursorState\mouseX > (*te\autoComplete\x + *te\autoComplete\width - *te\autoComplete\scrollBarWidth)
+				*cursorState\mousePosition = #TE_MousePosition_AutoCompleteScrollBar
 			Else
-				mousePosition = #TE_MousePosition_AutoComplete
+				*cursorState\mousePosition = #TE_MousePosition_AutoComplete
 			EndIf
-		ElseIf GetFlag(*te, #TE_EnableLineNumbers) And (*te\cursorState\mouseX <= (*te\leftBorderOffset - *te\lineHeight))
-			mousePosition = #TE_MousePosition_LineNumber
-		ElseIf *te\cursorState\mouseX < *te\leftBorderOffset
-			mousePosition = #TE_MousePosition_FoldState
+		ElseIf GetFlag(*te, #TE_EnableLineNumbers) And (*cursorState\mouseX <= (*te\leftBorderOffset - *te\lineHeight))
+			*cursorState\mousePosition = #TE_MousePosition_LineNumber
+		ElseIf *cursorState\mouseX < *te\leftBorderOffset
+			*cursorState\mousePosition = #TE_MousePosition_FoldState
 		EndIf
 		
-		If *te\cursorState\dragDropMode > 0
-			If modifiers & #PB_Canvas_Control
-				*te\cursorState\dragDropMode = #TE_CursorState_DragCopy
+		If *cursorState\dragDropMode > 0
+			If *cursorState\modifiers & #PB_Canvas_Control
+				*cursorState\dragDropMode = #TE_CursorState_DragCopy
 			Else
-				*te\cursorState\dragDropMode = #TE_CursorState_DragMove
+				*cursorState\dragDropMode = #TE_CursorState_DragMove
 			EndIf
 		EndIf
 		
-		If (buttons & #PB_Canvas_LeftButton) = 0
-			*te\cursorState\dragStart = #False
+		If (*cursorState\buttons & #PB_Canvas_LeftButton) = 0
+			*cursorState\dragStart = #False
 		EndIf
 		
-		CopyStructure(*cursor\position, *cursor\previousPosition, TE_POSITION)
-		CopyStructure(*cursor\selection, *cursor\previousSelection, TE_POSITION)
+		CopyStructure(*te\currentCursor\position, *te\currentCursor\previousPosition, TE_POSITION)
+		CopyStructure(*te\currentCursor\selection, *te\currentCursor\previousSelection, TE_POSITION)
 		
 		Select event_type
 				
 			Case #PB_EventType_LeftButtonDown
-				*te\cursorState\firstMousePosition = mousePosition
 				
-				If mousePosition = #TE_MousePosition_AutoComplete
-					ProcedureReturn
-				ElseIf mousePosition = #TE_MousePosition_AutoCompleteScrollBar
-					*te\autoComplete\lastScrollPos = *te\autoComplete\scrollLine
-					*te\autoComplete\scollMousePos = *te\cursorState\mouseY
-					*te\autoComplete\scrollDistance = 0
+				If Event_Mouse_LeftButtonDown(*te, *view, *te\currentCursor)
 					ProcedureReturn
 				EndIf
-				Autocomplete_Hide(*te.TE_STRUCT)
-				
-				If (time - *te\cursorState\firstClickTime) > *te\cursorState\clickSpeed
-					*te\cursorState\clickCount = 0
-				EndIf
-				*te\cursorState\firstClickTime = time
-				
-				If Cursor_GetScreenPos(*te, *view, mx, my, position) = #False
-					ProcedureReturn
-				EndIf
-				
-				If GetFlag(*te, #TE_EnableSelection) And Position_Equal(position, *te\cursorState\previousPosition)
-					*te\cursorState\clickCount + 1
-				Else
-					*te\cursorState\clickCount = 1
-				EndIf
-				
-				If *te\cursorState\clickCount = 1
-					If (modifiers & #PB_Canvas_Shift) = 0
-						
-						If *te\cursorState\dragStart = #False
-							If modifiers & #PB_Canvas_Control
-								*cursor = Cursor_Add(*te, position\lineNr, position\charNr)
-								If *cursor = #Null
-									ProcedureReturn
-								EndIf
-								CopyStructure(*cursor\position, position, TE_POSITION)
-							ElseIf (mousePosition <> #TE_MousePosition_FoldState) And (modifiers & #PB_Canvas_Alt = 0)
-								Cursor_Clear(*te, *cursor)
-							EndIf
-						EndIf
-						
-						If mousePosition = #TE_MousePosition_TextArea
-							If Position_InsideSelection(*te, *view, *te\cursorState\mouseX, *te\cursorState\mouseY)
-								*te\cursorState\dragStart = #True
-								CopyStructure(position, *te\cursorState\previousPosition, TE_POSITION)
-								ProcedureReturn
-							EndIf
-						EndIf
-						
-						*te\cursorState\firstClickX = mx
-						*te\cursorState\firstClickY = my
-						CopyStructure(position, *cursor\firstPosition, TE_POSITION)
-					EndIf
-				EndIf
-				
-				If mousePosition = #TE_MousePosition_LineNumber
-					
-					If GetFlag(*te, #TE_EnableSelection)
-						If (modifiers & #PB_Canvas_Control) And (GetFlag(*te, #TE_EnableMultiCursor) = 0)
-							Selection_SelectAll(*te)
-						Else
-							If modifiers & #PB_Canvas_Shift
-								If position\lineNr <= *cursor\firstPosition\lineNr
-									Cursor_Position(*te, *cursor, position\lineNr, 1, #False)
-									Selection_SetRange(*te, *cursor, *te\cursorState\firstSelection\pos1\lineNr, Textline_LastCharNr(*te, *te\cursorState\firstSelection\pos1\lineNr))
-								Else
-									Cursor_Position(*te, *cursor, position\lineNr + 1, 1, #False)
-									Selection_SetRange(*te, *cursor, *te\cursorState\firstSelection\pos1\lineNr, *te\cursorState\firstSelection\pos1\charNr)
-								EndIf
-							Else
-								Cursor_Position(*te, *cursor, position\lineNr + 1, 1, #False)
-								Selection_SetRange(*te, *cursor, position\lineNr, 1)
-								Selection_Get(*cursor, *te\cursorState\firstSelection)
-								CopyStructure(position, *cursor\firstPosition, TE_POSITION)
-							EndIf
-						EndIf
-					EndIf
-					
-				ElseIf mousePosition = #TE_MousePosition_FoldState
-					
-					If position\textline And (position\textline\foldState > 0)
-						Protected scrollLineNr = *view\scroll\visibleLineNr
-						Folding_Toggle(*te, position\lineNr)
-						*te\cursorState\dragDropMode = -1
-					EndIf
-					
-				ElseIf mousePosition = #TE_MousePosition_TextArea
-					
-					If *te\cursorState\clickCount = 1
-						
-						If (modifiers & #PB_Canvas_Shift = 0) And (modifiers & #PB_Canvas_Control = 0); And (*te\cursorState\state = 0)
-							Selection_Start(*cursor, position\lineNr, position\charNr)
-							; 							*te\redrawMode = #TE_Redraw_All
-						EndIf
-						
-						Cursor_Position(*te, *cursor, position\lineNr, position\charNr)
-						
-						If GetFlag(*te, #TE_EnableSelection) = 0
-							Selection_ClearAll(*te)
-						EndIf
-						
-						CopyStructure(*cursor\position, *cursor\firstPosition, TE_POSITION)
-						
-						If (modifiers & #PB_Canvas_Shift) = 0
-							Selection_Get(*cursor, *te\cursorState\firstSelection)
-						EndIf
-						
-					ElseIf *te\cursorState\clickCount = 2
-						
-						If (position\lineNr = *te\cursorState\previousPosition\lineNr) And (position\charNr = *te\cursorState\previousPosition\charNr)
-							; double-click:		select the word under the cursor
-							
-							If Selection_WholeWord(*te, *cursor, position\lineNr, position\charNr)
-								CopyStructure(*cursor\position, *cursor\firstPosition, TE_POSITION)
-								Selection_Get(*cursor, *te\cursorState\firstSelection)
-							EndIf
-							
-						EndIf
-						
-					ElseIf *te\cursorState\clickCount = 3
-						; tripple-click:	select whole line
-						
-						Selection_SetRange(*te, *cursor, position\lineNr, 1)
-						Cursor_Position(*te, *cursor, position\lineNr + 1, 1)
-						
-						CopyStructure(*cursor\position, *cursor\firstPosition, TE_POSITION)
-						Selection_Get(*cursor, *te\cursorState\firstSelection)
-						
-					ElseIf (*te\cursorState\clickCount = 4)
-						; quadruple-click:		select all
-						
-						Selection_SelectAll(*te)
-					EndIf
-					
-				EndIf
-				
-				If *te\needFoldUpdate
-					Folding_Update(*te, -1, -1)
-				EndIf
-				
-				Cursor_DeleteOverlapping(*te, *cursor)
-				
-				If ListSize(*te\cursor()) = 1 And Cursor_HasSelection(*te\currentCursor) = #False
-					SyntaxHighlight_Start(*te, *te\currentCursor)
-				Else
-					*te\highlightSyntax = 0
-				EndIf
-				
-				Cursor_LineHistoryAdd(*te)
-				
-				; 				RepeatedSelection_Clear(*te)
-				; 				RepeatedSelection_Update(*te, *cursor\position\lineNr, *cursor\position\charNr, *cursor\selection\lineNr, *cursor\selection\charNr)
-				
-				needRedraw = #True
-				
-				CopyStructure(position, *te\cursorState\previousPosition, TE_POSITION)
-				
-				Find_SetSelectionCheckbox(*te)
 				
 			Case #PB_EventType_LeftButtonUp
 				
-				If (*te\autoComplete\isScrolling = #False) And mousePosition = #TE_MousePosition_AutoComplete
-					*te\autoComplete\index = Clamp( (*te\cursorState\mouseY - *te\autoComplete\y - *te\topBorderSize) / *te\lineHeight - *te\autoComplete\scrollLine, 0, ListSize(*te\autoComplete\entry()) - 1)
-					
-					PostEvent(#TE_Event_Redraw, 0, 0, #TE_EventType_RedrawAll, *te\view)
+				If Event_Mouse_LeftButtonUp(*te, *view, *te\currentCursor)
 					ProcedureReturn
 				EndIf
 				
-				*te\redrawMode = #TE_Redraw_All
-				*te\autoComplete\isScrolling = #False
-				
-				If (time - *te\cursorState\firstClickTime) > *te\cursorState\clickSpeed
-					*te\cursorState\clickCount = 0
-				EndIf
-				
-				If *te\cursorState\clickCount = 3
-					*te\cursorState\clickCount = 0
-				EndIf
-				
-				If (*te\cursorState\dragDropMode = #TE_CursorState_Idle) Or (*te\cursorState\dragDropMode = #TE_CursorState_DragCancel)
-					*te\cursorState\dragDropMode = 0
-					*te\redrawMode = #TE_Redraw_All
-				ElseIf (*te\cursorState\dragDropMode = #TE_CursorState_DragCopy) Or (*te\cursorState\dragDropMode = #TE_CursorState_DragMove)
-					DragDrop_Drop(*te)
-				ElseIf mousePosition = #TE_MousePosition_TextArea
-					If *te\cursorState\clickCount = 1
-						If Cursor_GetScreenPos(*te, *view, mx, my, position)
-							If Position_Equal(position, *te\cursorState\previousPosition)
-								If (modifiers & #PB_Canvas_Shift) = 0 And (modifiers & #PB_Canvas_Control) = 0
-									Selection_Clear(*te, *cursor)
-								EndIf
-								If (modifiers & #PB_Canvas_Control) = 0
-									Cursor_Clear(*te, *cursor)
-								EndIf
-							EndIf
-							
-							Cursor_Position(*te, *cursor, *te\cursorState\previousPosition\lineNr, *te\cursorState\previousPosition\charNr)
-							If Selection_SetRange(*te, *cursor, *te\cursorState\firstSelection\pos1\lineNr, *te\cursorState\firstSelection\pos1\charNr)
-								*te\redrawMode = #TE_Redraw_All
-							EndIf
-						EndIf
-					EndIf
-				EndIf
-				
-				*view\scroll\autoScrollV = #False
-				*view\scroll\autoScrollH = #False
-				RemoveWindowTimer(*te\window, #TE_Timer_Scroll)
-				
-				If *te\currentCursor And RepeatedSelection_Update(*te, *te\currentCursor\position\lineNr, *te\currentCursor\position\charNr, *te\currentCursor\selection\lineNr, *te\currentCursor\selection\charNr) = #False
-					RepeatedSelection_Clear(*te)
-				EndIf
-				
-				Find_SetSelectionCheckbox(*te)
-				
 			Case #PB_EventType_LeftClick
 				
-				If (mousePosition = #TE_MousePosition_AutoCompleteScrollBar) And *te\autoComplete\height And (*te\autoComplete\scrollDistance = 0)
-					Autocomplete_Scroll(*te, 0, (*te\cursorState\mouseY - *te\autoComplete\y) / *te\autoComplete\height)
+				If (*cursorState\mousePosition = #TE_MousePosition_AutoCompleteScrollBar) And *te\autoComplete\height And (*te\autoComplete\scrollDistance = 0)
+					Autocomplete_Scroll(*te, 0, (*cursorState\mouseY - *te\autoComplete\y) / *te\autoComplete\height)
 					PostEvent(#TE_Event_Redraw, 0, 0, #TE_EventType_RedrawAll, *te\view)
 					ProcedureReturn
 				EndIf
 				
 			Case #PB_EventType_LeftDoubleClick
 				
-				If mousePosition = #TE_MousePosition_AutoComplete
+				If *cursorState\mousePosition = #TE_MousePosition_AutoComplete
 					Autocomplete_Insert(*te)
 					*te\redrawMode = #TE_Redraw_All
 					PostEvent(#TE_Event_Redraw, 0, 0, #TE_EventType_RedrawAll, *te\view)
@@ -10478,132 +10752,10 @@ Module _PBEdit_
 				
 			Case #PB_EventType_MouseMove
 				
-				If (buttons & #PB_Canvas_LeftButton And mousePosition = #TE_MousePosition_AutoCompleteScrollBar) Or *te\autoComplete\isScrolling 
-					If *te\autoComplete\height
-						*te\autoComplete\isScrolling = #True
-						*te\autoComplete\scrollDistance = (*te\autoComplete\scollMousePos - *te\cursorState\mouseY)
-						*te\autoComplete\scrollLine = *te\autoComplete\lastScrollPos + (*te\autoComplete\scrollDistance / DesktopScaledY(*te\autoComplete\height)) * ListSize(*te\autoComplete\entry())
-						*te\autoComplete\scrollLine = Clamp(*te\autoComplete\scrollLine, -(ListSize(*te\autoComplete\entry()) - *te\autoComplete\maxRows), 0)
-						PostEvent(#TE_Event_Redraw, 0, 0, #TE_EventType_RedrawAll, *te\view)
-					EndIf
+				If Event_Mouse_Move(*te, *view, *te\currentCursor)
 					ProcedureReturn
 				EndIf
 				
-				If mousePosition = #TE_MousePosition_AutoComplete
-					SetGadgetAttribute(*view\canvas, #PB_Canvas_Cursor, #PB_Cursor_Default)
-					ProcedureReturn
-				EndIf
-				
-				If *te\cursorState\dragStart And (*te\cursorState\clickCount = 1)
-					DragDrop_Start(*te)
-				EndIf
-				
-				If *te\cursorState\dragDropMode
-					*te\redrawMode = #TE_Redraw_All
-				EndIf
-				
-				*view\scroll\scrollDelay = 0
-				If (buttons & #PB_Canvas_LeftButton)
-					Protected yTop = DesktopScaledY(GadgetY(*view\canvas, #PB_Gadget_ScreenCoordinate)) + (*te\lineHeight * 0.5) * *view\zoom
-					Protected yBottom = DesktopScaledY(GadgetY(*view\canvas, #PB_Gadget_ScreenCoordinate) + GadgetHeight(*view\canvas)) - (*te\lineHeight * 0.5) * *view\zoom
-					Protected xLeft = DesktopScaledX(GadgetX(*view\canvas, #PB_Gadget_ScreenCoordinate) + *te\leftBorderOffset / *view\zoom)
-					Protected xRight = DesktopScaledX(GadgetX(*view\canvas, #PB_Gadget_ScreenCoordinate) + GadgetWidth(*view\canvas)) - (*te\lineHeight * 0.5) * *view\zoom
-					
-					If (*te\cursorState\desktopMouseY < yTop) Or (*te\cursorState\desktopMouseY > yBottom)
-						If *view\scroll\autoScrollV = #False
-							*view\scroll\autoScrollV = #True
-							RemoveWindowTimer(*te\window, #TE_Timer_Scroll)
-							AddWindowTimer(*te\window, #TE_Timer_Scroll, 25)
-						EndIf
-						ProcedureReturn
-					ElseIf *view\scroll\autoScrollV
-						*view\scroll\autoScrollV = #False
-						RemoveWindowTimer(*te\window, #TE_Timer_Scroll)
-					EndIf
-					
-					If (*te\cursorState\desktopMouseX < xLeft) Or (*te\cursorState\desktopMouseX > xRight)
-						If *view\scroll\autoScrollH = #False
-							*view\scroll\autoScrollH = #True
-							RemoveWindowTimer(*te\window, #TE_Timer_Scroll)
-							AddWindowTimer(*te\window, #TE_Timer_Scroll, 25)
-						EndIf
-						; 							ProcedureReturn
-					ElseIf *view\scroll\autoScrollH
-						*view\scroll\autoScrollH = #False
-						RemoveWindowTimer(*te\window, #TE_Timer_Scroll)
-					EndIf
-				EndIf
-				
-				If mousePosition = #TE_MousePosition_TextArea
-					SetGadgetAttribute(*view\canvas, #PB_Canvas_Cursor, #PB_Cursor_IBeam)
-				ElseIf mousePosition = #TE_MousePosition_LineNumber
-					SetGadgetAttribute(*view\canvas, #PB_Canvas_Cursor, #PB_Cursor_Hand)
-				Else
-					SetGadgetAttribute(*view\canvas, #PB_Canvas_Cursor, #PB_Cursor_Default)
-				EndIf
-				
-				If (buttons = #PB_Canvas_LeftButton) And GetFlag(*te, #TE_EnableSelection)
-					
-					If Cursor_GetScreenPos(*te, *view, mx, my, position); And Position_Changed(*cursor\previousPosition, position)
-						
-						If *te\cursorState\dragDropMode
-							CopyStructure(position, *te\cursorState\dragPosition, TE_POSITION)
-						Else
-		
-							If Position_InsideRange(position, *te\cursorState\firstSelection, #False) And (*te\cursorState\clickCount > 1)
-								Selection_SetRange(*te, *cursor, *te\cursorState\firstSelection\pos1\lineNr, *te\cursorState\firstSelection\pos1\charNr)
-								Cursor_Position(*te, *cursor, *te\cursorState\firstSelection\pos2\lineNr, *te\cursorState\firstSelection\pos2\charNr)
-							Else
-								If (mousePosition = #TE_MousePosition_LineNumber) Or (Abs(*te\cursorState\firstSelection\pos1\lineNr - *te\cursorState\firstSelection\pos2\lineNr) = 1 And *te\cursorState\firstSelection\pos1\charNr = 1 And *te\cursorState\firstSelection\pos1\charNr = 1)
-									If *te\cursorState\firstMousePosition = #TE_MousePosition_LineNumber
-										If position\lineNr < *te\cursorState\firstSelection\pos1\lineNr
-											Cursor_Position(*te, *cursor, position\lineNr, 1)
-											Selection_SetRange(*te, *cursor, *te\cursorState\firstSelection\pos1\lineNr, Textline_LastCharNr(*te, *te\cursorState\firstSelection\pos1\lineNr))
-										Else
-											Cursor_Position(*te, *cursor, position\lineNr + 1, 1)
-											Selection_SetRange(*te, *cursor, *te\cursorState\firstSelection\pos1\lineNr, 1)
-										EndIf
-									Else
-										If position\lineNr <= *te\cursorState\firstSelection\pos1\lineNr
-											Cursor_Position(*te, *cursor, position\lineNr, 1)
-											Selection_SetRange(*te, *cursor, *te\cursorState\firstSelection\pos2\lineNr, *te\cursorState\firstSelection\pos2\charNr)
-										Else
-											Cursor_Position(*te, *cursor, position\lineNr, 1)
-											Selection_SetRange(*te, *cursor, *te\cursorState\firstSelection\pos1\lineNr, *te\cursorState\firstSelection\pos1\charNr)
-										EndIf
-									EndIf
-								Else
-									CopyStructure(*te\cursorState\firstSelection, selection, TE_RANGE)
-									Selection_Add(selection, position\lineNr, position\charNr)
-									
-									Cursor_Position(*te, *cursor, position\lineNr, position\charNr)
-									
-									If Position_InsideRange(position, selection, #False) < 0
-										Selection_SetRange(*te, *cursor, selection\pos2\lineNr, selection\pos2\charNr)
-									Else
-										Selection_SetRange(*te, *cursor, selection\pos1\lineNr, selection\pos1\charNr)
-									EndIf
-									
-									; 									If Position_Changed(*cursor\previousPosition, *cursor\position)
-									; 										*te\redrawMode = #TE_Redraw_All
-									; 									EndIf
-									
-								EndIf
-							EndIf
-							
-							If modifiers & #PB_Canvas_Alt
-								Selection_SetRectangle(*te, *cursor)
-							Else
-								Cursor_DeleteOverlapping(*te, *cursor)
-								
-							EndIf
-							
-						EndIf
-						
-					EndIf
-					
-					needRedraw = #True
-				EndIf
 		EndSelect
 		
 		If *te\needFoldUpdate
@@ -10614,14 +10766,14 @@ Module _PBEdit_
 			Scroll_UpdateAllViews(*te, *te\view, *te\currentView, *te\currentCursor)
 		EndIf
 		
-		Selection_GetAll(*te, selection)
-		If Position_Changed(selection\pos1, selection\pos2) Or Position_Changed(previousSelection\pos1, previousSelection\pos2)
+		Selection_GetAll(*te, *cursorState\selection)
+		If Position_Changed(*cursorState\selection\pos1, *cursorState\selection\pos2) Or Position_Changed(*cursorState\previousSelection\pos1, *cursorState\previousSelection\pos2)
 			*te\redrawMode = #TE_Redraw_All
-			If Position_Changed(selection\pos1, previousSelection\pos1) Or Position_Changed(selection\pos2, previousSelection\pos2)
-				*te\redrawRange\pos1\lineNr = Min(selection\pos1\lineNr, previousSelection\pos1\lineNr)
-				*te\redrawRange\pos2\lineNr = Max(selection\pos2\lineNr, previousSelection\pos2\lineNr)
+			If Position_Changed(*cursorState\selection\pos1, *cursorState\previousSelection\pos1) Or Position_Changed(*cursorState\selection\pos2, *cursorState\previousSelection\pos2)
+				*te\redrawRange\pos1\lineNr = Min(*cursorState\selection\pos1\lineNr, *cursorState\previousSelection\pos1\lineNr)
+				*te\redrawRange\pos2\lineNr = Max(*cursorState\selection\pos2\lineNr, *cursorState\previousSelection\pos2\lineNr)
 				
-				RepeatedSelection_Update(*te, selection\pos1\lineNr, selection\pos1\charNr, selection\pos2\lineNr, selection\pos2\charNr)
+				RepeatedSelection_Update(*te, *cursorState\selection\pos1\lineNr, *cursorState\selection\pos1\charNr, *cursorState\selection\pos2\lineNr, *cursorState\selection\pos2\charNr)
 			EndIf
 		EndIf
 		
@@ -10629,7 +10781,7 @@ Module _PBEdit_
 			Autocomplete_UpdateDictonary(*te, 0, 0)
 		EndIf
 		
-		If needRedraw
+		If *cursorState\needRedraw
 			If *te\redrawMode & #TE_Redraw_All
 				PostEvent(#TE_Event_Redraw, 0, 0, #TE_EventType_RedrawAll, *te\view)
 			Else
@@ -10878,7 +11030,7 @@ Module _PBEdit_
 						
 					Case *te\find\btn_replace
 						
-						Undo_Start(*te\undo)
+						Undo_Start(*te, *te\undo)
 						If GetGadgetState(*te\find\chk_replace) = 1
 							If Cursor_HasSelection(*te\currentCursor)
 								Cursor_SelectionStart(*te, *te\currentCursor)
@@ -10893,7 +11045,7 @@ Module _PBEdit_
 						
 					Case *te\find\btn_replaceAll
 						
-						Undo_Start(*te\undo)
+						Undo_Start(*te, *te\undo)
 						If GetGadgetState(*te\find\chk_replace) = 1
 							flags = Find_Flags(*te)
 							result = Find_Start(*te, *te\currentCursor, 0, 0, GetGadgetText(*te\find\cmb_search), GetGadgetText(*te\find\cmb_replace), flags | #TE_Find_Next | #TE_Find_ReplaceAll)
@@ -10928,7 +11080,7 @@ Module _PBEdit_
 		ProcedureReturnIf((*te = #Null) Or (*te\currentView = #Null) Or (IsGadget(*te\currentView\canvas) = 0))
 		
 		Protected menu = EventMenu()
-		Protected undoIndex = Undo_Start(*te\undo)
+		Protected undoIndex = Undo_Start(*te, *te\undo)
 		
 		CopyStructure(*te\currentCursor\selection, *te\currentCursor\previousSelection, TE_POSITION)
 		CopyStructure(*te\currentCursor\position, *te\currentCursor\previousPosition, TE_POSITION)
@@ -11082,6 +11234,8 @@ Module _PBEdit_
 	Procedure Event_Cursor()
 		Protected *te.TE_STRUCT = EventData()
 		
+		LockMutex(_PBEdit_Mutex)
+		
 		If *te And *te\isActive And *te\currentView And IsGadget(*te\currentView\canvas) And (*te\cursorState\dragDropMode = 0)
 			If *te\cursorState\blinkSuspend
 				*te\cursorState\blinkSuspend = 0
@@ -11100,6 +11254,8 @@ Module _PBEdit_
 			
 			PostEvent(#TE_Event_Redraw, 0, 0, #TE_EventType_RedrawChangedLines, *te\currentView)
 		EndIf
+		
+		UnlockMutex(_PBEdit_Mutex)
 	EndProcedure
 	
 	Procedure Event_Redraw()
@@ -11287,7 +11443,7 @@ Module PBEdit
 		If *te
 			Protected lineNr
 			
-			Undo_Start(*te\undo)
+			Undo_Start(*te, *te\undo)
 			If Position < 0
 				Position = *te\currentCursor\position\lineNr - 1
 			EndIf
@@ -11309,8 +11465,6 @@ Module PBEdit
 			EndIf
 			
 			Selection_Clear(*te, *te\currentCursor)
-			
-			Undo_Update(*te)
 			PBEdit_Redraw(*te)
 		EndIf
 	EndProcedure
@@ -11334,35 +11488,29 @@ Module PBEdit
 	
 	Procedure PBEdit_SetGadgetText(ID, Text$)
 		Protected *te.TE_STRUCT = PBEdit_IsGadget(ID)
-		Protected oldFlag
 		If *te
-			oldFlag = GetFlag(*te, #TE_EnableReadOnly)
-			SetFlag(*te, #TE_EnableReadOnly, 0)
-			
+			Undo_Start(*te, *te\undo)
 			Selection_SelectAll(*te)
 			Selection_Delete(*te, *te\currentCursor, *te\undo)
 			If FirstElement(*te\textLine())
-				Textline_AddText(*te, *te\currentCursor, @Text$, Len(Text$), #TE_Styling_UpdateFolding | #TE_Styling_UpdateIndentation);, *te\undo)
+				Textline_AddText(*te, *te\currentCursor, @Text$, Len(Text$), #TE_Styling_UpdateFolding | #TE_Styling_UpdateIndentation, *te\undo)
 			EndIf
 			Folding_Update(*te, -1, -1)
 			Scroll_Update(*te, *te\currentView, *te\currentCursor, -1, -1)
-			
+			Undo_Update(*te)
 			PBEdit_Redraw(*te)
-			
-			SetFlag(*te, #TE_EnableReadOnly, oldFlag)
 		EndIf
 	EndProcedure
-	
+		
 	Procedure PBEdit_SetGadgetItemText(ID, Position, Text$)
 		Protected *te.TE_STRUCT = PBEdit_IsGadget(ID)
 		If *te
 			If Textline_FromLine(*te, Position + 1)
-				Undo_Start(*te\undo)
+				Undo_Start(*te, *te\undo)
 				Textline_SetText(*te, *te\textLine(), Text$, #TE_Styling_All, *te\undo)
 				Cursor_Position(*te, *te\currentCursor, ListIndex(*te\textLine()) + 1, Len(Text$) + 1)
 				Selection_Clear(*te, *te\currentCursor)
 				Undo_Update(*te)
-				
 				PBEdit_Redraw(*te)
 			EndIf
 		EndIf
@@ -11372,7 +11520,7 @@ Module PBEdit
 		Protected *te.TE_STRUCT = PBEdit_IsGadget(ID)
 		If *te
 			If Textline_FromLine(*te, Position + 1)
-				Undo_Start(*te\undo)
+				Undo_Start(*te, *te\undo)
 				Cursor_Position(*te, *te\currentCursor, ListIndex(*te\textLine()), 1)
 				Selection_SetRange(*te, *te\currentCursor, *te\currentCursor\position\lineNr + 1, 1)
 				Selection_Delete(*te, *te\currentCursor, *te\undo)
@@ -11457,7 +11605,7 @@ Module PBEdit
 	Procedure PBEdit_SetText(ID, Text$)
 		Protected *te.TE_STRUCT = PBEdit_IsGadget(ID)
 		If *te And *te\currentCursor
-			Undo_Start(*te\undo)
+			Undo_Start(*te, *te\undo)
 			Selection_Delete(*te, *te\currentCursor, *te\undo)
 			Textline_AddText(*te, *te\currentCursor, @Text$, Len(Text$), #TE_Styling_All, *te\undo)
 			Selection_Clear(*te, *te\currentCursor)
@@ -11539,10 +11687,12 @@ Module PBEdit
 	
 	Procedure PBEdit_SetFlag(ID, Flag, Value)
 		Protected *te.TE_STRUCT = PBEdit_IsGadget(ID)
+		Protected oldValue
 		If *te
+			oldValue = GetFlag(*te, Flag)
 			SetFlag(*te, Flag, Value)
 		EndIf
-		ProcedureReturn 0
+		ProcedureReturn oldValue
 	EndProcedure
 	
 	Procedure PBEdit_GetFlag(ID, Flag)
@@ -11599,7 +11749,7 @@ CompilerIf #PB_Compiler_IsMainFile
 	
 	UseModule PBEdit
 	
-	OpenWindow(0, 0, 0, 800, 600, "PBEdit 1.12", #PB_Window_SystemMenu | #PB_Window_SizeGadget | #PB_Window_MinimizeGadget | #PB_Window_MaximizeGadget | #PB_Window_Maximize)
+	OpenWindow(0, 0, 0, 800, 600, AppTitle$, #PB_Window_SystemMenu | #PB_Window_SizeGadget | #PB_Window_MinimizeGadget | #PB_Window_MaximizeGadget | #PB_Window_Maximize)
 	
 	CreateToolBar(0, WindowID(0), #PB_ToolBar_Large)
 	ToolBarImageButton(#tlb_undo, ImageID(UndoImage(180)))
@@ -11611,14 +11761,16 @@ CompilerIf #PB_Compiler_IsMainFile
 	AddStatusBarField(#PB_Ignore)
 	WindowBounds(0, 100, 100, #PB_Ignore, #PB_Ignore)
 	
-	editor = PBEdit_Gadget(0, 5, ToolBarHeight(0), WindowWidth(0) - 10, WindowHeight(0) - (ToolBarHeight(0) + StatusBarHeight(0) + 5))	
+	editor = PBEdit_Gadget(0, 5, ToolBarHeight(0), WindowWidth(0) - 10, WindowHeight(0) - (ToolBarHeight(0) + StatusBarHeight(0) + 5))
 	If PBEdit_IsGadget(editor) = 0
 		MessageRequester("", "Failed to create PBEdit Gadget", #PB_MessageRequester_Error)
 		End
 	EndIf
 	
 	PBEdit_LoadSettings(editor, #PB_Compiler_FilePath + "styles\PBEdit_PureBasic.settings")
- 	PBEdit_LoadStyle(editor, #PB_Compiler_FilePath + "styles\PBEdit_PureBasic.style")
+	PBEdit_LoadStyle(editor, #PB_Compiler_FilePath + "styles\PBEdit_PureBasic.style")
+	
+	PBEdit_SetFlag(editor, _PBEdit_::#TE_EnableDictionary, 0)
 	
 	If ReadFile(0, #PB_Compiler_Filename, #PB_File_SharedRead)
 		PBEdit_SetText(editor, ReadString(0, #PB_File_IgnoreEOL))
@@ -11645,14 +11797,14 @@ CompilerIf #PB_Compiler_IsMainFile
 					PBEdit_Undo(editor)
 				ElseIf EventMenu() = #tlb_redo
 					PBEdit_Redo(editor)
-				EndIf
-				
+				EndIf				
 				; --- custom events ---
 			Case _PBEdit_::#TE_Event_Cursor
 				If EventType() = _PBEdit_::#TE_EventType_Change
 					StatusBarText(0, 0, "Line: " + Str(PBEdit_GetCursorLineNr(editor)) + 
 					                    "  Column: " + Str(PBEdit_GetCursorColumnNr(editor)) + 
 					                    "  (Char: " + Str(PBEdit_GetCursorCharNr(editor)) + ")")
+					
 				ElseIf EventType() = _PBEdit_::#TE_EventType_Add Or EventType() = _PBEdit_::#TE_EventType_Remove
 					StatusBarText(0, 2, "Cursors: " + Str(PBEdit_GetCursorCount(editor)))
 				EndIf
@@ -11667,11 +11819,10 @@ CompilerIf #PB_Compiler_IsMainFile
 		EndSelect
 	ForEver
 CompilerEndIf
-; IDE Options = PureBasic 6.00 LTS (Windows - x64)
-; CursorPosition = 11598
-; FirstLine = 11575
-; Folding = ------------------------------------------------
+; IDE Options = PureBasic 6.01 LTS beta 3 (Windows - x64)
+; CursorPosition = 152
+; FirstLine = 136
+; Folding = -------------------------------------------------
 ; Optimizer
 ; EnableXP
 ; DPIAware
-; DisableDebugger

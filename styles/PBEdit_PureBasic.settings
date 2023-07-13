@@ -25,6 +25,7 @@
 		<Setting name="enableSelectPastedText" value="0"/>
 		<Setting name="enableWordWrap" value="0"/>
 		<Setting name="enableReadOnly" value="0"/>
+		<Setting name="enableShowModifiedLines" value="1"/>
 		<Setting name="wordWrapMode" value="None"/>
 		<Setting name="wordWrapSize" value="0"/>
 		<Setting name="indentationMode" value="Auto"/>
@@ -63,6 +64,7 @@
 		<Color name="lineNr" value="150,150,145"/>
 		<Color name="currentLineNr" value="225,225,220"/>
 		<Color name="lineNrBackground" value="40,40,35"/>
+		<Color name="modifiedLine" value="255,200,128"/>
 		<Color name="foldIcon" value="180,180,175"/>
 		<Color name="foldIconBorder" value="100,100,95"/>
 		<Color name="foldIconBackground" value="40,40,35"/>

@@ -1,4 +1,4 @@
--=PBEdit 1.13=-
+-=PBEdit 1.14=-
 ---------------------------------------------------------------------
 a canvas-based text editor -> PureBasic only <- no external libraries
 

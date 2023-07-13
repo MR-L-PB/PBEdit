@@ -153,3 +153,15 @@ Features
 	changed:	renamed TE_STRUCT\autoCompleteList to TE_STRUCT\dictionary
 	changed:	optimization in Procedure Indentation_Range
 	changed:	optimization in Procedure Folding_UnfoldTextline
+
+	v1.14
+	fixed:		bug in Procedure Folding_Update when flag #TE_EnableFolding is false
+	fixed:		typo #TE_Autocomplete_FindAtBegind
+	added		flag #TE_EnableShowModifiedLines: when enabled, modified textlines are indicated by a orange line
+	added		SplitterGadget to chage the size of splitted views
+	changed:	replaced all occurances of .s with $ (just my personal taste)
+	changed:	inside Structure TE_TEXTLINE: removed fields needRedraw.b, needStyling.b, marker.b, remark.b
+				All these flags are now controlled by TE_TEXTLINE\flags and the values from the #TE_TextLine_... Enumeration
+	issues:		strong flashing of the screen when resizing a splitted view with the splitterbar
+				sometimes the "Unsplit View" function is not working correctly
+				'remark textlines' and 'word wrapping' is in an experimental stage and are not working correctly

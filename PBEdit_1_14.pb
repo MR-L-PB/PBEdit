@@ -3724,7 +3724,7 @@ Module _PBEdit_
 			*textline = *te\syntaxHighlight()\textline
 			If *textline And *textline\syntaxHighlight()
 				FillMemory(@*textLine\syntaxHighlight(), ArraySize(*textLine\syntaxHighlight()), 0, #PB_Byte)
-				*te\textLine()\flags | #TE_TextLine_Redraw
+				*textline\flags | #TE_TextLine_Redraw
 				*te\redrawMode | #TE_Redraw_ChangedLines
 			EndIf
 		Next
@@ -4556,7 +4556,7 @@ Module _PBEdit_
 	
 	Procedure Textline_AddChar(*te.TE_STRUCT, *cursor.TE_CURSOR, c.c, overwrite, styleFlags = #TE_Styling_All, *undo.TE_UNDO = #Null)
 		ProcedureReturnIf((*te = #Null) Or GetFlag(*te, #TE_EnableReadOnly) Or (*cursor = #Null) Or (*cursor\position\textline = #Null))
-		ProcedureReturnIf(*cursor\position\textline\flags & (#TE_TextLine_RemarkText | #TE_TextLine_RemarkWarning | #TE_TextLine_RemarkError))
+		ProcedureReturnIf(*cursor\position\textline\flags & #TE_TextLine_Remark)
 		
 		ChangeCurrentElement(*te\textLine(), *cursor\position\textline)
 		
@@ -6393,7 +6393,6 @@ Module _PBEdit_
 		
 		*te\redrawMode | #TE_Redraw_ChangedLines
 		*cursor\position\textline\flags | #TE_TextLine_Redraw
-		
 		
 		PostEvent(#TE_Event_Cursor, *te\window, 0, #TE_EventType_Remove)
 		
@@ -12023,9 +12022,10 @@ CompilerIf #PB_Compiler_IsMainFile
 	ForEver
 CompilerEndIf
 ; IDE Options = PureBasic 5.73 LTS (Windows - x64)
-; CursorPosition = 9781
-; FirstLine = 9776
+; CursorPosition = 3726
+; FirstLine = 3715
 ; Folding = --------------------------------------------------
 ; EnableXP
 ; DPIAware
+; DisableDebugger
 ; Optimizer

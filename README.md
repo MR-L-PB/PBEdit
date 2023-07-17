@@ -156,6 +156,7 @@ Features
 
 	v1.14
 	fixed:		bug in Procedure Folding_Update when flag #TE_EnableFolding is false
+ 	fixed:		bug in Procedure View_Resize
 	fixed:		typo #TE_Autocomplete_FindAtBegind
 	added		flag #TE_EnableShowModifiedLines: when enabled, modified textlines are indicated by a orange line
 	added		SplitterGadget to chage the size of splitted views
